@@ -344,7 +344,7 @@ The system exposes several runtime-configurable parameters via the \texttt{Confi
     \item \textbf{RQ3:} How robust is the system under runtime topology changes (without restart/reset) in terms of stability and accuracy?
     \item \textbf{RQ4:} How do throughput and latency scale with the number of cameras and detection rates?
 \end{itemize}
-We evaluate on both the Woven VisionAI WTS dataset~\cite{woven2024wts} and the NVIDIA SmartSpaces dataset~\cite{aicity2025track1}, focusing on scenarios with varying camera graph sparsity and topology updates during execution. We focus our quantitative evaluation on systems-level metrics: throughput (windows per second), peak processing latency for the clustering stage, and similarity matrix generation time.
+We evaluate on both the Woven VisionAI WTS dataset~\cite{kong2024wts} and the NVIDIA SmartSpaces dataset~\cite{aicity2025track1}, focusing on scenarios with varying camera graph sparsity and topology updates during execution. We focus our quantitative evaluation on systems-level metrics: throughput (windows per second), peak processing latency for the clustering stage, and similarity matrix generation time.
 
 \subsection{Baselines}
 
@@ -404,7 +404,7 @@ The significantly higher latency of CluStream is attributed to the framework ini
 
 \subsection{System Benchmark: Architectural Speedup}
 
-We benchmark the fundamental performance of the proposed streams-and-tables architecture (\textbf{Ours-Base}) against the conventional batch-oriented baseline (\textbf{Theirs}). The evaluation is conducted across two datasets: the Woven VisionAI WTS dataset~\cite{woven2024wts} and the NVIDIA SmartSpaces dataset~\cite{aicity2025track1}, allowing us to observe scaling effects under different data densities.
+We benchmark the fundamental performance of the proposed streams-and-tables architecture (\textbf{Ours-Base}) against the conventional batch-oriented baseline (\textbf{Theirs}). The evaluation is conducted across two datasets: the Woven VisionAI WTS dataset~\cite{kong2024wts} and the NVIDIA SmartSpaces dataset~\cite{aicity2025track1}, allowing us to observe scaling effects under different data densities.
 
 Table~\ref{tab:performance_combined} summarizes the architectural speedup achieved for the primary Multi-Camera People Tracking (MCPT) stages. Our implementation significantly outperforms the baseline, particularly in similarity matrix generation, which forms the primary computational bottleneck in the original version.
 
