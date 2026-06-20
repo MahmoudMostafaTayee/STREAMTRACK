@@ -50,9 +50,6 @@ public class IotMain implements Runnable {
      * Gets the runtime from the
      * configuration and initializes it.
      */
-    private static final java.util.List<String> AVAILABLE_CAMERAS = java.util.Arrays.asList(
-            "camera_0001", "camera_0011", "camera_0013", "camera_0017");
-
     private java.util.List<String> cameraList;
     private final TableSocketServer socketServer = new TableSocketServer(9999);
     private final Gson gson = new Gson();
@@ -63,6 +60,8 @@ public class IotMain implements Runnable {
 
     // Dynamic Topology State
     private final java.util.Map<String, java.util.Set<String>> topologyGraph = new ConcurrentHashMap<>();
+    // Transition Graph: non-overlapping adjacent cameras considered for Re-ID
+    public static final java.util.Map<String, java.util.Set<String>> transitionGraph = new ConcurrentHashMap<>();
     private final java.util.Map<java.util.Set<String>, String> activeDeployments = new ConcurrentHashMap<>();
 
     private void initiateRunTime() {
@@ -104,12 +103,21 @@ public class IotMain implements Runnable {
         EventEPLUtil.initiateRuntime();
     }
 
+    /**
+     * Dynamically discover cameras from the features directory.
+     * Falls back to the camera filter if specified.
+     */
     private java.util.List<String> getCameraList() {
         java.util.List<String> cameras = new java.util.ArrayList<>();
         String filter = TrackingParameters.CAMERA_FILTER;
 
         if (filter.equalsIgnoreCase("all")) {
-            return new java.util.ArrayList<>(AVAILABLE_CAMERAS);
+            // Dynamically scan the features directory for camera subdirectories
+            cameras = discoverCamerasFromFeaturesDir();
+            if (cameras.isEmpty()) {
+                logger.warn("No cameras found in features directory. Check FEATURES_BASE_DIR configuration.");
+            }
+            return cameras;
         }
 
         String[] parts = filter.split(",");
@@ -131,11 +139,39 @@ public class IotMain implements Runnable {
         }
 
         if (cameras.isEmpty()) {
-            logger.warn("No valid cameras found in filter: " + filter + ". Defaulting to all.");
-            return new java.util.ArrayList<>(AVAILABLE_CAMERAS);
+            logger.warn("No valid cameras found in filter: " + filter + ". Discovering from features directory.");
+            cameras = discoverCamerasFromFeaturesDir();
         }
 
         logger.info("Selected cameras: " + cameras);
+        return cameras;
+    }
+
+    /**
+     * Scans the features base directory for the configured scene to discover
+     * all available camera subdirectories (e.g., camera_0001, camera_0019).
+     */
+    private static java.util.List<String> discoverCamerasFromFeaturesDir() {
+        java.util.List<String> cameras = new java.util.ArrayList<>();
+        String sceneDirName = String.format("scene_%03d", TrackingParameters.scene);
+        java.nio.file.Path scenePath = java.nio.file.Paths.get(TrackingParameters.FEATURES_BASE_DIR, sceneDirName);
+
+        if (!java.nio.file.Files.isDirectory(scenePath)) {
+            logger.error("Scene directory not found for dynamic camera discovery: " + scenePath);
+            return cameras;
+        }
+
+        try (java.util.stream.Stream<java.nio.file.Path> dirs = java.nio.file.Files.list(scenePath)) {
+            dirs.filter(java.nio.file.Files::isDirectory)
+                .map(p -> p.getFileName().toString())
+                .filter(name -> name.startsWith("camera_"))
+                .sorted()
+                .forEach(cameras::add);
+        } catch (java.io.IOException e) {
+            logger.error("Error scanning features directory for cameras", e);
+        }
+
+        logger.info("Dynamically discovered " + cameras.size() + " cameras from " + scenePath + ": " + cameras);
         return cameras;
     }
 
@@ -227,7 +263,8 @@ public class IotMain implements Runnable {
     private void prepareTopologyQueries() {
         // Create an Esper Table for Camera Topology (Neighborhood Graph)
         // This allows us to query which cameras are neighbors at runtime.
-        String createTableEPL = "create table CameraTopologyTable (cameraId string primary key, neighborId string primary key, enabled boolean);";
+        // The `overlapping` column distinguishes stream-join edges from transition-only edges.
+        String createTableEPL = "create table CameraTopologyTable (cameraId string primary key, neighborId string primary key, enabled boolean, overlapping boolean);";
         EventEPLUtil.addEpl(createTableEPL);
         EventEPLUtil.addEpl("create index CameraTopologyNeighborIndex on CameraTopologyTable (neighborId);");
 
@@ -235,18 +272,18 @@ public class IotMain implements Runnable {
         String insertEPL = "on CameraTopology as ct " +
                 "merge into CameraTopologyTable as target " +
                 "where target.cameraId = ct.cameraId and target.neighborId = ct.neighborId " +
-                "when matched then update set target.enabled = ct.enabled " +
-                "when not matched then insert select ct.cameraId as cameraId, ct.neighborId as neighborId, ct.enabled as enabled;";
+                "when matched then update set target.enabled = ct.enabled, target.overlapping = ct.overlapping " +
+                "when not matched then insert select ct.cameraId as cameraId, ct.neighborId as neighborId, ct.enabled as enabled, ct.overlapping as overlapping;";
         EventEPLUtil.addEpl(insertEPL);
 
-        // Initial population from static groups to bootstrap the "Graph"
+        // Initial population from static overlapping groups to bootstrap the "Graph"
         String groupsConfig = TrackingParameters.CAMERA_GROUPS;
         if (groupsConfig.equalsIgnoreCase("all")) {
             for (int i = 0; i < cameraList.size(); i++) {
                 for (int j = i + 1; j < cameraList.size(); j++) {
                     String camI = cameraList.get(i);
                     String camJ = cameraList.get(j);
-                    initialTopology.add(new com.espertech.esper.example.IOT.streams.CameraTopology(camI, camJ, true));
+                    initialTopology.add(new com.espertech.esper.example.IOT.streams.CameraTopology(camI, camJ, true, true));
                 }
             }
         } else {
@@ -257,18 +294,66 @@ public class IotMain implements Runnable {
                     for (int j = i + 1; j < parts.length; j++) {
                         String camI = normalizeCameraName(parts[i].trim());
                         String camJ = normalizeCameraName(parts[j].trim());
-                        // Add bidirectional links
+                        // Add bidirectional overlapping links
                         initialTopology
-                                .add(new com.espertech.esper.example.IOT.streams.CameraTopology(camI, camJ, true));
+                                .add(new com.espertech.esper.example.IOT.streams.CameraTopology(camI, camJ, true, true));
                         initialTopology
-                                .add(new com.espertech.esper.example.IOT.streams.CameraTopology(camJ, camI, true));
+                                .add(new com.espertech.esper.example.IOT.streams.CameraTopology(camJ, camI, true, true));
                     }
                 }
             }
         }
 
-        logger.info("Initialized CameraTopologyTable with reconfigurable neighborhood data.");
+        // Parse CAMERA_TRANSITIONS to populate the transitionGraph for non-overlapping Re-ID edges
+        // Format: "camera_12->camera_02,camera_13,camera_17;camera_05->camera_08"
+        // These define directed transition edges: when a track leaves cameraA,
+        // the Re-ID engine will consider candidate matches only from the listed target cameras.
+        parseTransitionEdges();
 
+        logger.info("Initialized CameraTopologyTable with reconfigurable neighborhood data.");
+        if (!transitionGraph.isEmpty()) {
+            logger.info("Transition graph for non-overlapping Re-ID: {}", transitionGraph);
+        }
+    }
+
+    /**
+     * Parses the --camera_transitions CLI argument to build the transitionGraph.
+     * <p>
+     * Format: {@code "12->2,13,17;5->8"} or {@code "camera_0012->camera_0002,camera_0013,camera_0017"}
+     * <p>
+     * Each entry {@code A->B,C} creates bidirectional transition edges:
+     * A can transition to B and C, and B and C can transition back to A.
+     */
+    private void parseTransitionEdges() {
+        String config = TrackingParameters.CAMERA_TRANSITIONS;
+        if (config == null || config.trim().isEmpty()) {
+            return;
+        }
+
+        String[] entries = config.split(";");
+        for (String entry : entries) {
+            entry = entry.trim();
+            if (entry.isEmpty()) continue;
+
+            String[] arrow = entry.split("->");
+            if (arrow.length != 2) {
+                logger.warn("Invalid transition entry (expected 'A->B,C'): {}", entry);
+                continue;
+            }
+
+            String sourceCamera = normalizeCameraName(arrow[0].trim());
+            String[] targets = arrow[1].split(",");
+
+            for (String target : targets) {
+                String targetCamera = normalizeCameraName(target.trim());
+                if (targetCamera.isEmpty()) continue;
+
+                // Add non-overlapping transition edges to initialTopology
+                // These are loaded into CameraTopologyTable and propagate to transitionGraph dynamically
+                initialTopology.add(new com.espertech.esper.example.IOT.streams.CameraTopology(sourceCamera, targetCamera, true, false));
+                initialTopology.add(new com.espertech.esper.example.IOT.streams.CameraTopology(targetCamera, sourceCamera, true, false));
+            }
+        }
     }
 
     private String normalizeCameraName(String token) {
@@ -303,13 +388,26 @@ public class IotMain implements Runnable {
                         String camA = (String) event.get("cameraId");
                         String camB = (String) event.get("neighborId");
                         boolean enabled = (boolean) event.get("enabled");
+                        boolean overlapping = (boolean) event.get("overlapping");
 
-                        if (enabled) {
-                            topologyGraph.computeIfAbsent(camA, k -> java.util.Collections.synchronizedSet(new java.util.HashSet<>())).add(camB);
-                            topologyGraph.computeIfAbsent(camB, k -> java.util.Collections.synchronizedSet(new java.util.HashSet<>())).add(camA);
+                        if (overlapping) {
+                            // Overlapping cameras -> affect stream join topology
+                            if (enabled) {
+                                topologyGraph.computeIfAbsent(camA, k -> java.util.Collections.synchronizedSet(new java.util.HashSet<>())).add(camB);
+                                topologyGraph.computeIfAbsent(camB, k -> java.util.Collections.synchronizedSet(new java.util.HashSet<>())).add(camA);
+                            } else {
+                                if (topologyGraph.containsKey(camA)) topologyGraph.get(camA).remove(camB);
+                                if (topologyGraph.containsKey(camB)) topologyGraph.get(camB).remove(camA);
+                            }
                         } else {
-                            if (topologyGraph.containsKey(camA)) topologyGraph.get(camA).remove(camB);
-                            if (topologyGraph.containsKey(camB)) topologyGraph.get(camB).remove(camA);
+                            // Non-overlapping cameras -> affect Re-ID transition graph only
+                            if (enabled) {
+                                transitionGraph.computeIfAbsent(camA, k -> java.util.Collections.synchronizedSet(new java.util.HashSet<>())).add(camB);
+                                transitionGraph.computeIfAbsent(camB, k -> java.util.Collections.synchronizedSet(new java.util.HashSet<>())).add(camA);
+                            } else {
+                                if (transitionGraph.containsKey(camA)) transitionGraph.get(camA).remove(camB);
+                                if (transitionGraph.containsKey(camB)) transitionGraph.get(camB).remove(camA);
+                            }
                         }
                     }
                     reconcileDeployments();

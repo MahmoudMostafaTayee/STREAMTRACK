@@ -580,13 +580,13 @@ public class EmbeddingFeatureStreamer {
         logger.info("==========================================================================");
 
         com.espertech.esper.example.IOT.streams.CameraTopology break1 =
-                new com.espertech.esper.example.IOT.streams.CameraTopology("camera_0021", "camera_0030", false);
+                new com.espertech.esper.example.IOT.streams.CameraTopology("camera_0021", "camera_0030", false, true);
         com.espertech.esper.example.IOT.streams.CameraTopology break2 =
-                new com.espertech.esper.example.IOT.streams.CameraTopology("camera_0030", "camera_0021", false);
+                new com.espertech.esper.example.IOT.streams.CameraTopology("camera_0030", "camera_0021", false, true);
         com.espertech.esper.example.IOT.streams.CameraTopology break3 =
-                new com.espertech.esper.example.IOT.streams.CameraTopology("camera_0025", "camera_0030", false);
+                new com.espertech.esper.example.IOT.streams.CameraTopology("camera_0025", "camera_0030", false, true);
         com.espertech.esper.example.IOT.streams.CameraTopology break4 =
-                new com.espertech.esper.example.IOT.streams.CameraTopology("camera_0030", "camera_0025", false);
+                new com.espertech.esper.example.IOT.streams.CameraTopology("camera_0030", "camera_0025", false, true);
 
         EventEPLUtil.streamEvent(break1, "CameraTopology");
         EventEPLUtil.streamEvent(break2, "CameraTopology");
@@ -604,13 +604,13 @@ public class EmbeddingFeatureStreamer {
         logger.info("==========================================================================");
 
         com.espertech.esper.example.IOT.streams.CameraTopology join1 =
-                new com.espertech.esper.example.IOT.streams.CameraTopology("camera_0021", "camera_0030", true);
+                new com.espertech.esper.example.IOT.streams.CameraTopology("camera_0021", "camera_0030", true, true);
         com.espertech.esper.example.IOT.streams.CameraTopology join2 =
-                new com.espertech.esper.example.IOT.streams.CameraTopology("camera_0030", "camera_0021", true);
+                new com.espertech.esper.example.IOT.streams.CameraTopology("camera_0030", "camera_0021", true, true);
         com.espertech.esper.example.IOT.streams.CameraTopology join3 =
-                new com.espertech.esper.example.IOT.streams.CameraTopology("camera_0025", "camera_0030", true);
+                new com.espertech.esper.example.IOT.streams.CameraTopology("camera_0025", "camera_0030", true, true);
         com.espertech.esper.example.IOT.streams.CameraTopology join4 =
-                new com.espertech.esper.example.IOT.streams.CameraTopology("camera_0030", "camera_0025", true);
+                new com.espertech.esper.example.IOT.streams.CameraTopology("camera_0030", "camera_0025", true, true);
 
         EventEPLUtil.streamEvent(join1, "CameraTopology");
         EventEPLUtil.streamEvent(join2, "CameraTopology");

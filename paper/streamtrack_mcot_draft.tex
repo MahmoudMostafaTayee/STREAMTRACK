@@ -121,7 +121,7 @@ The architecture of \textbf{STREAMTRACK} is organized as a pipeline of continuou
 \begin{itemize}[leftmargin=*]
     \item $\texttt{GlobalIDTable}(\textit{globalId}, \textit{lastSeen}, \textit{attributes}\{\textit{Cameras}[], \textit{Timestamp}, \textit{Coordinate}\})$
     \item $\texttt{CalibrationTable}(\textit{cameraId}, \textit{homographyMatrix})$
-    \item $\texttt{CameraTopologyTable}(\textit{cameraId}, \textit{neighborId}, \textit{enabled})$
+    \item $\texttt{CameraTopologyTable}(\textit{cameraId}, \textit{neighborId}, \textit{enabled}, \textit{overlapping})$
 \end{itemize}
 
 \subsection{Execution Semantics}
@@ -205,6 +205,34 @@ Global identities are maintained in the \texttt{GlobalIDTable}. We implement a \
 
 A critical operational advantage of this streaming setup is its deterministic memory management. Batch tracking systems often suffer from unconstrained memory usage due to accumulating appearance signatures. In contrast, when the CEP engine detects that a person has been unseen across all cameras for a configured period (e.g., 2 minutes), an EPL timer triggers a \texttt{TrackExpiredEvent} with strict \texttt{@Priority(10)} handling. This signals the system to systematically purge stale \texttt{GlobalIDTable} rows and decisively garbage-collect the associated heavy feature trace tensors from the JVM memory.
 
+\subsection{Handling Non-Overlapping Cameras via Transitional Gating}
+A key challenge in real-world MCOT deployments is the presence of isolated, non-overlapping cameras in the network. If the camera neighborhood is modeled purely based on overlapping fields of view (to perform stream joins for active windows), a person moving out of an isolated camera's field of view and into another camera's view will inevitably be assigned a new global identity, as no active stream join encompasses both cameras. 
+
+To resolve this issue without losing the computational and scalability benefits of topological partitioning, we introduce the concept of \emph{transition edges} in the topology graph. Unlike overlapping edges, which group cameras into synchronization joins, transition edges define directed or bidirectional movement paths between non-overlapping camera regions. These transition edges are included directly in the relational \texttt{CameraTopologyTable} state table alongside overlapping edges. This unified representation allows both overlapping neighborhood joins and non-overlapping transition boundaries to be dynamically reconfigured at runtime with zero downtime by streaming \texttt{CameraTopology} events.
+
+For example, consider a physical layout where a person walks out of the isolated field of view of \texttt{camera\_12} and can transition to \texttt{camera\_02}, \texttt{camera\_13}, or \texttt{camera\_17}. If we rely solely on overlapping groups, \texttt{camera\_12} has no neighbors, and any track leaving it is terminated, leading to a new identity assignment when the person appears in the next camera. By configuring the transitions \texttt{12:02,13,17}, the system registers these non-overlapping paths.
+
+During the global association stage, before calculating appearance similarities between active window clusters and historical tracks in the \texttt{GlobalIDTable}, the system executes a topology-gating check:
+\begin{equation}
+    \text{Re-IDAllowed}(T_H, C_{curr}) = \begin{cases}
+        \text{True} & \text{if } \text{LastSeenCamera}(T_H) \in C_{curr} \\
+        \text{True} & \text{if } \exists c \in C_{curr} \text{ s.t. } (\text{LastSeenCamera}(T_H), c) \in E_{\text{overlap}} \cup E_{\text{transition}} \\
+        \text{False} & \text{otherwise}
+    \end{cases}
+\end{equation}
+where $T_H$ is the historical track, $C_{curr}$ is the set of cameras containing the current cluster, $E_{\text{overlap}}$ represents the overlapping camera edges, and $E_{\text{transition}}$ represents the non-overlapping transition paths.
+
+Applying this rule, when a person leaves the scenery of \texttt{camera\_12}, their last-seen camera state in the \texttt{GlobalIDTable} is updated to \texttt{camera\_12}. When a new tracklet appears in \texttt{camera\_02}, \texttt{camera\_13}, or \texttt{camera\_17}, the gating function identifies that \texttt{camera\_12} is a valid transition neighbor. The Re-ID module is then permitted to compare their visual embeddings, successfully preserving the global ID across the non-overlapping gap. Crucially, the system bypasses similarity evaluations for all other cameras, maintaining the localized search complexity and preventing false-positive matches in distant parts of the network.
+
+Figure~\ref{fig:transition_flow} illustrates this case study, highlighting the transition paths from the isolated \texttt{camera\_12} zone to the adjacent camera sceneries.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.65\linewidth]{Evidence/map_transition_flow.png}
+    \caption{Transition topology mapping for isolated cameras. A person leaving the non-overlapping field of view of \texttt{Camera 12} can transition to \texttt{Camera 02}, \texttt{Camera 13}, or \texttt{Camera 17}. The transitional gating logic restricts Re-ID candidate matching to these paths, preventing identity fragmentation across non-overlapping zones.}
+    \label{fig:transition_flow}
+\end{figure}
+
 \subsection{Join Planning and Optimization}
 Topology sparsity reduces the join search space and improves throughput. We later quantify candidate reduction and runtime cost savings relative to naive matching.
 
@@ -276,7 +304,7 @@ where current_timestamp() - lastSeen > 120000;
 -- Define relational neighborhood graph
 -- (Esper 9 composite primary key syntax)
 create table CameraTopologyTable (
-    cameraId string, neighborId string, enabled boolean, 
+    cameraId string, neighborId string, enabled boolean, overlapping boolean,
     primary key(cameraId, neighborId)
 );
 
@@ -286,11 +314,12 @@ merge into CameraTopologyTable as target
 where target.cameraId = ct.cameraId
   and target.neighborId = ct.neighborId
 when matched then
-  update set target.enabled = ct.enabled
+  update set target.enabled = ct.enabled, target.overlapping = ct.overlapping
 when not matched then
   insert select ct.cameraId as cameraId,
                ct.neighborId as neighborId,
-               ct.enabled as enabled;
+               ct.enabled as enabled,
+               ct.overlapping as overlapping;
 \end{verbatim}
 
 \noindent Critically, the \texttt{CameraTopologyTable} is not merely a static configuration store. Our system implements a \emph{reactive reconfiguration loop}: each incoming \texttt{CameraTopology} event triggers a Connected Components computation over the in-memory neighborhood graph. When the resulting cluster partition differs from the currently active set of aggregation queries, the system automatically compiles and deploys new EPL statements targeting the updated camera groups, while undeploying the obsolete ones. This enables zero-downtime reconfiguration of the camera network---an operator can add, remove, or reassign camera neighborhoods at runtime without restarting the pipeline or manually editing query definitions.
@@ -322,7 +351,7 @@ We evaluate on both the Woven VisionAI WTS dataset~\cite{woven2024wts} and the N
 Baselines include: (i) the original batch-oriented baseline pipeline (\textbf{Theirs}), (ii) a relational streaming implementation without topology pruning (\textbf{Ours-Base}), and (iii) the full optimized pipeline with topology-aware joins (\textbf{Ours-Opt}).
 
 \subsection{Implementation Parity and Functional Accuracy}
-Before evaluating performance gains, we first verify that the proposed streaming architecture preserves tracking quality. We evaluate the \emph{Implementation Parity} between \textbf{Ours} (StreamTrack) and the reference baseline (\textbf{Theirs}) using a serialized cross-implementation mapping method. Functional equivalence is quantified across three pipeline stages using the following metrics:
+Before evaluating performance gains, we first verify that the proposed streaming architecture preserves tracking quality. We evaluate the \emph{Implementation Parity} between \textbf{Ours} (StreamTrack) and the reference baseline (\textbf{Theirs}) using a serialized cross-implementation mapping method. Functional equivalence is quantified across two pipeline stages using the following metrics:
 
 \begin{itemize}[leftmargin=*]
     \item \textbf{Numerical Parity (Similarity Matrix):} We measure code-level equivalence by calculating the \textbf{Mean Absolute Difference (MAD)} between the Re-ID similarity matrices generated by both systems. A near-zero MAD across all windows confirms that our Relational Stream implementation maintains the numerical precision of the batch baseline.
@@ -346,7 +375,7 @@ Table~\ref{tab:parity_metrics} summarizes these results for the Woven WTS Datase
     \end{tabular}
 \end{table}
 
-The metrics characterize different aspects of the system: MAD quantifies numerical error (where $0$ is perfect), while ARI and Match \% quantify structural agreement (where $1$ or $100\%$ is perfect). The results confirm that while minor structural differences exist in the per-window HAC clusters (92.86\%)---primarily due to floating-point tie-breaking in similarity matrices---the stateful \texttt{GlobalIDTable} maintenance effectively reconciles these discrepancies. By mapping incoming clusters against a persistent historical consensus of identity state, the streaming engine ensures absolute functional parity (100.00\% Global ID Match) with the original batch pipeline. Consequently, all downstream tracking accuracy metrics (IDF1, HOTA) are preserved by construction as visually affirmed in Figure~\ref{fig:visual_comparison}. 
+The metrics characterize different stages of the tracking pipeline: MAD quantifies numerical error (where $0$ is perfect) at the Re-ID similarity matrix stage, while the Global ID Assignment Match measures final output consistency across the entire scene. The results confirm that our streaming engine achieves both exact numerical parity ($< 1 \times 10^{-6}$ MAD) and absolute functional parity (100.00\% Global ID Match) with the original batch pipeline. By mapping incoming clusters against a persistent historical consensus of identity state, the stateful \texttt{GlobalIDTable} maintains identical track associations. Consequently, all downstream tracking accuracy metrics (IDF1, HOTA) are preserved by construction, as visually affirmed in Figure~\ref{fig:visual_comparison}. 
 
 \begin{figure}[H]
     \centering

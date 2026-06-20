@@ -1492,6 +1492,66 @@ public class MCPT {
     }
 
     /**
+     * Check if a historical track's last-seen camera is topology-connected to any
+     * of the current cluster's cameras.
+     * <p>
+     * A connection exists if:
+     * <ul>
+     *   <li>The lastSeenCamera is directly one of the currentCams (same camera)</li>
+     *   <li>The lastSeenCamera has a transition edge to any of the currentCams</li>
+     * </ul>
+     * If the transition graph is empty (no transitions configured), all cameras
+     * are considered connected (backward-compatible, no filtering).
+     *
+     * @param lastSeenCamera   The camera where the historical track was last observed
+     * @param currentCams      The set of cameras where the current cluster appears
+     * @param transitionGraph  The non-overlapping transition adjacency graph
+     * @return true if topology-connected (Re-ID should be attempted)
+     */
+    public static boolean isTopologyConnected(
+            String lastSeenCamera,
+            Set<String> currentCams,
+            java.util.Map<String, java.util.Set<String>> transitionGraph) {
+
+        // If no transitions are configured, allow all matches (no topology filtering)
+        if (transitionGraph == null || transitionGraph.isEmpty()) {
+            return true;
+        }
+
+        // Same camera -> always connected
+        if (currentCams.contains(lastSeenCamera)) {
+            return true;
+        }
+
+        // Check if the lastSeenCamera has a transition edge to any currentCam
+        java.util.Set<String> reachable = transitionGraph.get(lastSeenCamera);
+        if (reachable != null) {
+            for (String cam : currentCams) {
+                if (reachable.contains(cam)) {
+                    return true;
+                }
+            }
+        }
+
+        // Also check if any currentCam has an edge pointing to lastSeenCamera
+        // (handles asymmetric transition definitions, though we build bidirectional)
+        for (String cam : currentCams) {
+            java.util.Set<String> camReachable = transitionGraph.get(cam);
+            if (camReachable != null && camReachable.contains(lastSeenCamera)) {
+                return true;
+            }
+        }
+
+        // Check if both cameras are in the same overlapping group
+        // (cameras in the same group are always connected for Re-ID)
+        // This is implicitly handled because overlapping cameras will see
+        // the same person in the same window and be clustered together.
+        // No additional check needed here.
+
+        return false;
+    }
+
+    /**
      * Perform multi-camera people tracking
      * Python equivalent: multi_camera_people_tracking
      * 
@@ -1678,14 +1738,16 @@ public class MCPT {
         Map<Integer, CameraDict> cameraDict = createCameraDict(
                 representativeNodes, shortTrackTh, keypointConditionTh);
 
-        // --- NEW: MATCH WINDOW CLUSTERS TO HISTORICAL GLOBAL IDS ---
+        // --- TOPOLOGY-CONSTRAINED HISTORICAL ID MATCHING ---
         Map<Integer, List<double[]>> clusterFeatures = new HashMap<>();
+        Map<Integer, Set<String>> clusterCameras = new HashMap<>(); // track which cameras each cluster appears on
         long currentTime = System.currentTimeMillis();
 
         for (Map.Entry<Integer, CameraDict> cameraEntry : cameraDict.entrySet()) {
             Integer cameraId = cameraEntry.getKey();
             Map<Integer, RepresentativeNode> camReps = representativeNodes.get(cameraId);
             CameraDict dict = cameraEntry.getValue();
+            String cameraName = String.format("camera_%04d", cameraId);
 
             for (int i = 0; i < dict.indices.size(); i++) {
                 int localId = dict.uniqueLocalIds.get(i);
@@ -1695,6 +1757,7 @@ public class MCPT {
                 if (node != null && node.feature != null) {
                     clusterFeatures.computeIfAbsent(windowClusterId, k -> new ArrayList<>()).add(node.feature);
                 }
+                clusterCameras.computeIfAbsent(windowClusterId, k -> new HashSet<>()).add(cameraName);
             }
         }
 
@@ -1716,12 +1779,17 @@ public class MCPT {
             clusterAvgFeature.put(entry.getKey(), avg);
         }
 
+        // Get the transition graph for topology-constrained matching
+        java.util.Map<String, java.util.Set<String>> currentTransitionGraph =
+                com.espertech.esper.example.IOT.IotMain.transitionGraph;
+
         Map<Integer, Integer> windowClusterToGlobalId = new HashMap<>();
         Set<Integer> matchedGlobalIds = new HashSet<>();
 
         for (Map.Entry<Integer, double[]> currentCluster : clusterAvgFeature.entrySet()) {
             int winClusterId = currentCluster.getKey();
             double[] currentFeature = currentCluster.getValue();
+            Set<String> currentCams = clusterCameras.getOrDefault(winClusterId, Collections.emptySet());
 
             int bestGlobalId = -1;
             double bestSim = -1.0;
@@ -1733,6 +1801,16 @@ public class MCPT {
 
                 GlobalTrackState histState = globalEntry.getValue();
 
+                // Topology connectivity check:
+                // If the historical track has a lastSeenCamera recorded, verify that
+                // at least one of the current cluster's cameras is topology-connected
+                // (overlapping group or transition edge) to the last seen camera.
+                if (histState.lastSeenCamera != null && !currentCams.isEmpty()) {
+                    if (!isTopologyConnected(histState.lastSeenCamera, currentCams, currentTransitionGraph)) {
+                        continue; // skip: not reachable via topology
+                    }
+                }
+
                 for (double[] histFeature : histState.recentFeatures) {
                     double sim = computeCosineSimilarity(currentFeature, histFeature);
                     if (sim > bestSim) {
@@ -1742,23 +1820,26 @@ public class MCPT {
                 }
             }
 
+            // Pick a representative camera for this cluster (first one alphabetically)
+            String representativeCamera = currentCams.stream().sorted().findFirst().orElse(null);
+
             if (bestSim >= (1.0 - epsilon)) {
                 windowClusterToGlobalId.put(winClusterId, bestGlobalId);
                 matchedGlobalIds.add(bestGlobalId);
 
                 GlobalTrackState matchedState = globalTrackRegistry.get(bestGlobalId);
                 matchedState.addFeature(currentFeature);
-                matchedState.updateLastSeen(currentTime);
+                matchedState.updateLastSeen(currentTime, representativeCamera);
             } else {
                 int newGlobalId = nextGlobalId.getAndIncrement();
                 windowClusterToGlobalId.put(winClusterId, newGlobalId);
 
-                GlobalTrackState newState = new GlobalTrackState(newGlobalId, currentTime);
+                GlobalTrackState newState = new GlobalTrackState(newGlobalId, currentTime, representativeCamera);
                 newState.addFeature(currentFeature);
                 globalTrackRegistry.put(newGlobalId, newState);
             }
         }
-        // --- END HISTORICAL ID MATCHING ---
+        // --- END TOPOLOGY-CONSTRAINED HISTORICAL ID MATCHING ---
 
         // DUMP: Camera dictionary mapping
         if (TrackingParameters.isDebug) {

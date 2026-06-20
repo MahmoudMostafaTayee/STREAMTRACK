@@ -77,6 +77,10 @@ public class TrackingParameters {
     // "all" OR "1,2;2,3,4"
     public static String CAMERA_GROUPS;
 
+    // ===== Camera transitions =====
+    // e.g., "12:02,13,17"
+    public static String CAMERA_TRANSITIONS = "";
+
     public static int scene = 2;
 
     private TrackingParameters() {
@@ -110,6 +114,9 @@ public class TrackingParameters {
 
         // ---------- Camera groups ----------
         CAMERA_GROUPS = cmd.getOptionValue("camera_groups", "all");
+
+        // ---------- Camera transitions ----------
+        CAMERA_TRANSITIONS = cmd.getOptionValue("camera_transitions", "");
 
         // ---------- Execution level ----------
         if (cmd.hasOption("exec_all")) {
@@ -176,6 +183,12 @@ public class TrackingParameters {
                 .build());
 
         options.addOption(Option.builder()
+                .longOpt("camera_transitions")
+                .hasArg()
+                .desc("Camera transitions (e.g., '12:02,13,17')")
+                .build());
+
+        options.addOption(Option.builder()
                 .longOpt("output_dir")
                 .hasArg()
                 .desc("Directory to save logs and outputs")
@@ -216,10 +229,9 @@ public class TrackingParameters {
                         "scene=" + scene +
                         ", FEATURES_BASE_DIR='" + FEATURES_BASE_DIR + '\'' +
                         ", OUTPUT_DIR='" + OUTPUT_DIR + '\'' +
-                        ", FEATURES_BASE_DIR='" + FEATURES_BASE_DIR + '\'' +
-                        ", OUTPUT_DIR='" + OUTPUT_DIR + '\'' +
                         ", CAMERA_FILTER='" + CAMERA_FILTER + '\'' +
                         ", CAMERA_GROUPS='" + CAMERA_GROUPS + '\'' +
+                        ", CAMERA_TRANSITIONS='" + CAMERA_TRANSITIONS + '\'' +
                         ", epsilonScpt=" + epsilonScpt +
                         ", timePeriod=" + timePeriod +
                         ", epsilonMcpt=" + epsilonMcpt +
