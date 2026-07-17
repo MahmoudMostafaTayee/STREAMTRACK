@@ -11,6 +11,8 @@ import java.nio.file.Files;
 import java.nio.file.Paths;
 
 import java.util.*;
+import org.nd4j.linalg.api.ndarray.INDArray;
+import org.nd4j.linalg.factory.Nd4j;
 
 /**
  * Multi-Camera People Tracking (MCPT) implementation.
@@ -126,51 +128,51 @@ public class MCPT {
         }
 
         double[][] featuresArray = featureList.toArray(new double[0][]);
-
-        // CRITICAL FIX: Create DENSE similarity matrix (no epsilon thresholding)
-        // Python's create_similarity_matrix_mcpt creates full cosine similarity,
-        // then zeros values < (1-epsilon) in a separate step
         int n = featuresArray.length;
-        double[][] similarityMatrix = new double[n][n];
+        int d = featuresArray[0].length;
 
-        // Compute full cosine similarity matrix
+        // OPTIMIZED: Use ND4J BLAS mmul() matching sklearn's cosine_similarity
+        // Python: cosine_similarity(feature_stack) → normalize → dot → float16 cast
+        //
+        // 1. Build ND4J matrix (n × d) from features
+        INDArray X = Nd4j.create(featuresArray);
+
+        // 2. Normalize each row to unit length (matching sklearn's normalize())
+        //    L2 norm per row, handle zero vectors by setting first element to 1
         for (int i = 0; i < n; i++) {
-            similarityMatrix[i][i] = 1.0;
-
-            for (int j = i + 1; j < n; j++) {
-                // Compute cosine similarity
-                double[] a = featuresArray[i];
-                double[] b = featuresArray[j];
-
-                double dotProduct = 0.0;
-                double normA = 0.0;
-                double normB = 0.0;
-
-                for (int k = 0; k < a.length; k++) {
-                    dotProduct += a[k] * b[k];
-                    normA += a[k] * a[k];
-                    normB += b[k] * b[k];
+            double norm = 0.0;
+            for (int k = 0; k < d; k++) {
+                double v = featuresArray[i][k];
+                norm += v * v;
+            }
+            norm = Math.sqrt(norm);
+            if (norm == 0.0) {
+                // Zero vector: set first dim to 1 so cosine similarity with zero
+                // produces 0 (dot=0, norm=1) matching Python's behavior
+                X.putScalar(i, 0, 1.0);
+            } else {
+                double invNorm = 1.0 / norm;
+                for (int k = 0; k < d; k++) {
+                    X.putScalar(i, k, featuresArray[i][k] * invNorm);
                 }
+            }
+        }
 
-                normA = Math.sqrt(normA);
-                normB = Math.sqrt(normB);
+        // 3. BLAS GEMM: similarity = X_norm @ X_norm.T  (single BLAS call)
+        //    sklearn calls np.dot(X_norm, X_norm.T) → BLAS gemm under the hood
+        INDArray sim = X.mmul(X.transpose());
 
-                double similarity;
-                if (normA == 0 && normB == 0) {
-                    similarity = 1.0;
-                } else if (normA == 0 || normB == 0) {
-                    similarity = 0.0;
-                } else {
-                    similarity = dotProduct / (normA * normB);
+        // 4. Extract to double[][] with float16 simulation
+        //    Python: similarity_matrix.astype(np.float16)
+        boolean doFloat16 = TrackingParameters.isDebug;
+        double[][] similarityMatrix = new double[n][n];
+        for (int i = 0; i < n; i++) {
+            for (int j = 0; j < n; j++) {
+                double val = sim.getDouble(i, j);
+                if (doFloat16) {
+                    val = SCPT.simulateFloat16(val);
                 }
-
-                // Simulate float16 precision to match Python's .astype(np.float16)
-                if (TrackingParameters.isDebug) {
-                    similarity = SCPT.simulateFloat16(similarity);
-                }
-
-                similarityMatrix[i][j] = similarity;
-                similarityMatrix[j][i] = similarity;
+                similarityMatrix[i][j] = val;
             }
         }
 
@@ -264,24 +266,62 @@ public class MCPT {
 
         // Compute similarity matrix and find highest centrality
         double[][] featuresArray = featureStack.toArray(new double[0][]);
-        double[][] similarityMatrix = SCPT.createSimilarityMatrixSCPT(featuresArray, epsilon);
 
-        // Zero out values below threshold
-        for (int i = 0; i < similarityMatrix.length; i++) {
-            for (int j = 0; j < similarityMatrix[i].length; j++) {
-                if (similarityMatrix[i][j] < 1.0 - epsilon) {
-                    similarityMatrix[i][j] = 0.0;
+        // OPTIMIZED: Use ND4J BLAS for cosine similarity + centrality
+        int m = featuresArray.length;
+        int d = featuresArray[0].length;
+
+        // 1. Normalize feature vectors
+        INDArray X = Nd4j.create(featuresArray);
+        double[] rowNorms = new double[m];
+        for (int i = 0; i < m; i++) {
+            double norm = 0.0;
+            for (int k = 0; k < d; k++) {
+                double v = featuresArray[i][k];
+                norm += v * v;
+            }
+            norm = Math.sqrt(norm);
+            rowNorms[i] = norm;
+            if (norm > 0.0) {
+                double invNorm = 1.0 / norm;
+                for (int k = 0; k < d; k++) {
+                    X.putScalar(i, k, featuresArray[i][k] * invNorm);
                 }
+            } else {
+                X.putScalar(i, 0, 1.0);
             }
         }
 
-        // Calculate centralities (sum of similarities)
-        double[] centralities = new double[similarityMatrix.length];
-        for (int i = 0; i < similarityMatrix.length; i++) {
-            centralities[i] = Arrays.stream(similarityMatrix[i]).sum();
+        // 2. BLAS GEMM: sim = X_norm @ X_norm.T (single BLAS call)
+        INDArray sim = X.mmul(X.transpose());
+
+        // 3. Compute centralities (row sums) directly from BLAS result
+        //    Python: np.sum(similarity_matrix, axis=0)
+        double[] centralities = new double[m];
+        double threshold = 1.0 - epsilon;
+        boolean doFloat16 = TrackingParameters.isDebug;
+        for (int i = 0; i < m; i++) {
+            double sum = 0.0;
+            for (int j = 0; j < m; j++) {
+                if (i == j) {
+                    sum += 1.0; // self-similarity = 1
+                } else {
+                    double val = sim.getDouble(i, j);
+                    if (rowNorms[i] == 0 || rowNorms[j] == 0) {
+                        val = 0.0; // zero-vector case
+                    } else if (doFloat16) {
+                        val = SCPT.simulateFloat16(val);
+                    }
+                    if (val < threshold) {
+                        val = 0.0;
+                    }
+                    sum += val;
+                }
+            }
+            centralities[i] = sum;
         }
 
-        // Find index of max centrality
+        // Find index of max centrality (Python: np.argmax)
         int idxMax = 0;
         double maxCentrality = centralities[0];
         for (int i = 1; i < centralities.length; i++) {

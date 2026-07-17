@@ -21,6 +21,9 @@ public class TrackingParameters {
     public static String distanceType = "max"; // Python default: "max"
     public static int distanceTh = 10; // Python default: 5
     public static double simTh = 0.75; // Python default: 0.75
+    public static boolean reassign_global_id = true; // Python default: True
+    public static boolean assign_all_tracklet = false; // Python default: False
+    public static boolean delete_few_camera_cluster = true; // Python default: True
     public static double keypointTh = 0.7;
     public static double aspectTh = 1.6;
     public static double replaceValue = -10.0;
@@ -135,6 +138,9 @@ public class TrackingParameters {
 
         // ---------- Log everything ----------
         printArgs();
+
+        // ---------- Debug Mode ----------
+        isDebug = cmd.hasOption("debug");
 
         // ---------- Turbo Mode ----------
         turboMode = cmd.hasOption("turbo");

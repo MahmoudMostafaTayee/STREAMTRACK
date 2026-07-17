@@ -137,7 +137,9 @@ public class Tracker {
 
         // 5. Inter-Window Association (Global Tracking)
         if (windowIndex >= 1) {
-            newClusterLabels = SCPT.associateClusterBetweenPeriod(
+            // associateClusterBetweenPeriod now returns the FULL list
+            // [past_items_post_association..., current_items_post_association...]
+            List<Integer> fullAssociated = SCPT.associateClusterBetweenPeriod(
                     featureList,
                     newClusterLabels,
                     frameNumbers,
@@ -145,6 +147,14 @@ public class Tracker {
                     pastClusters,
                     pastFrames,
                     TrackingParameters.epsilonScpt);
+
+            // Extract only the current half for per-window processing (NMS, warp)
+            int pastSize = pastClusters.size();
+            List<Integer> currentHalf = new ArrayList<>();
+            for (int i = pastSize; i < fullAssociated.size(); i++) {
+                currentHalf.add(fullAssociated.get(i));
+            }
+            newClusterLabels = currentHalf;
 
             if (TrackingParameters.isDebug) {
                 String filePath = TrackingParameters.OUTPUT_DIR
