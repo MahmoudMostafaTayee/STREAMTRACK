@@ -45,7 +45,7 @@
 
 \begin{abstract}
 Multi-camera object tracking (MCOT) is typically built as a tightly coupled, monolithic computer-vision pipeline, which makes cross-camera association hard to scale, identity decisions hard to inspect, and the camera network hard to reconfigure. We argue these are problems of \emph{architecture}, not of the vision task, and re-architect MCOT as a \emph{streams-and-tables} system: detections flow as streams, global identities and camera topology are queryable relational tables, and cross-camera association is a continuous, topology-aware join over them. 
-This turns each difficulty into a property of the design: topology-pruned association (scalability), an inspectable identity view (observability), and topology-as-data (zero-downtime reconfigurability). Realised on an embeddable complex-event-processing engine, the architecture reproduces the global-identity assignments of a state-of-the-art batch baseline while delivering a \textbf{9.7$\times$} overall speedup (up to \textbf{236$\times$} in the clustering stage) over an equivalent JVM-native batch implementation---eliminating the language bias of prior cross-language comparisons---with a further \textbf{4.16$\times$} latency reduction (up to \textbf{4.27$\times$} in steady state excluding JVM warm-up) from topology-aware partitioning at nine cameras.
+This turns each difficulty into a property of the design: topology-pruned association (scalability), an inspectable identity view (observability), and topology-as-data (zero-downtime reconfigurability). Realised on an embeddable complex-event-processing engine, the architecture reproduces the global-identity assignments of a state-of-the-art batch baseline while delivering a \textbf{9.7$\times$} overall speedup (up to \textbf{236$\times$} in the clustering stage) over an equivalent JVM-native batch implementation---isolating the architectural speedup from language, runtime, and library effects---with a further \textbf{4.16$\times$} latency reduction (up to \textbf{4.27$\times$} in steady state excluding JVM warm-up) from topology-aware partitioning at nine cameras.
 \end{abstract}
 
 
@@ -113,7 +113,7 @@ This paper makes the following contributions:
     the architecture reproduces the global-identity assignments of a state-of-the-art batch
     baseline while delivering a \textbf{9.7$\times$} overall speedup (up to \textbf{300$\times$} in
     representative selection and \textbf{236$\times$} in clustering) over an equivalent JVM batch
-    baseline---eliminating the language bias of prior cross-language comparisons---with a further
+    baseline---isolating the architectural speedup from language, runtime, and library effects---with a further
     \textbf{4.16$\times$} from topology-aware partitioning at nine cameras.
 \end{itemize}
 
@@ -616,6 +616,7 @@ All experiments were conducted on a single workstation with the following hardwa
     \item \textbf{Runtime Environment (JVM):} OpenJDK Runtime Environment (JBR-21.0.8+9-1163.69-jcef) running OpenJDK 64-Bit Server VM, with the minimum and maximum heap sizes configured to 256~MB (\texttt{-Xms256m -Xmx256m}) to simulate resource-constrained edge environments.
     \item \textbf{Stream Processing Engine:} Esper version 9.0.0.
 \end{itemize}
+Both the JVM batch baseline and the streaming architecture were executed on this single workstation under identical conditions, ensuring a fair comparison with no confounding hardware differences.
 
 \subsection{Implementation Parity and Functional Accuracy}
 Before evaluating performance gains, we first verify that the proposed streaming architecture preserves tracking quality. We evaluate the \emph{Implementation Parity} between the streaming streams-and-tables architecture and the JVM-native batch baseline using a serialized cross-implementation mapping method. Since the two implementations assign serial numbers in a different order (due to incremental vs. batch processing order), we align representative nodes by their unique per-tracklet serial numbers before computing all comparison metrics. Functional equivalence is quantified across five pipeline stages, spanning the full processing chain from numerical computation to final identity assignment:
@@ -663,6 +664,8 @@ Table~\ref{tab:parity_metrics} summarizes these results for the Woven WTS Datase
 
 The metrics characterize different stages of the tracking pipeline. For the similarity matrix, MAD quantifies numerical error (where $0$ is perfect). The near-identical RAW matrices (MAD $= 1.63 \times 10^{-8}$, 98.37\% cells bit-exact) confirm that the cosine similarity computation is functionally identical between the two implementations. The small residual discrepancies ($< 1 \times 10^{-6}$) arise from floating-point accumulation differences (both implementations share the same JVM and ND4J/OpenBLAS backend) and are well below any practical decision threshold ($\epsilon = 0.37$). After zeroing and replacement, parity improves to 99.01\% cells exact.
 
+The parity analysis was conducted incrementally during development, with each pipeline stage validated independently against the batch baseline. This process identified and resolved an identity-propagation inconsistency in the post-clustering stages, after which all stages achieve exact structural parity (ARI = NMI = 1.0000).
+
 For clustering, the perfect ARI and NMI scores ($= 1.0000$) demonstrate that the Hierarchical Agglomerative Clustering produces \emph{identical} groupings---all 14 cluster groups match exactly across the 175 commonly-aligned representative nodes. The small node-selection discrepancy between the batch and streaming pipelines (the batch pipeline includes one extra representative node, serial 1018 from Camera~1) is a pre-clustering filtering artefact and does not affect the clustering outcome on the shared node set.
 
 Beyond clustering, we verified structural parity across all downstream single-camera post-processing stages. Non-maximum suppression (NMS) produces identical labels (ARI~=~1.0000) with 37 unique identities and 893 noise-labelled detections in both implementations. The subsequent warp merge stage also achieves perfect agreement (ARI~=~1.0000, again 37 unique identities), confirming that the feature aggregation and bounding-box fusion logic are functionally equivalent. The cross-camera topology matrix, which records inter-camera association counts, converges to an identical $12 \times 12$ structure in both pipelines.
@@ -696,36 +699,37 @@ The significantly higher latency of CluStream is attributed to the framework ini
 
 \subsection{System Benchmark: Architectural Speedup}
 
-We benchmark the fundamental performance of the proposed streams-and-tables architecture against a functionally equivalent JVM-native batch implementation of the same MCPT pipeline. Both systems are written in Java and run on the same JVM (JBR-21.0.8, heap~256~MB), eliminating the language bias that confounds cross-language comparisons. The evaluation is conducted on the Woven VisionAI WTS dataset~\cite{kong2024wts} (Scene~2, cameras 0001, 0011, 0017, 0019) over 25 consecutive synchronization windows.
+We benchmark the fundamental performance of the proposed streams-and-tables architecture against a functionally equivalent JVM-native batch implementation of the same MCPT pipeline. Both systems are written in Java and run on the same JVM (JBR-21.0.8, heap~256~MB) on the identical workstation, isolating the architectural speedup from confounding effects of language, runtime, and math library. The evaluation is conducted on the Woven VisionAI WTS dataset~\cite{kong2024wts} (Scene~2, cameras 0001, 0011, 0017, 0019) over 25 consecutive synchronization windows.
 
 Table~\ref{tab:performance_combined} summarizes the architectural speedup achieved for the primary Multi-Camera People Tracking (MCPT) stages. Our streaming implementation significantly outperforms the batch baseline, particularly in the representative selection and hierarchical clustering stages.
 
 \begin{table}[H]
     \centering
-    \caption{Architectural Speedup (Java Batch Baseline vs. Java Streaming) for Woven WTS Dataset (25-Window Average, 4 cameras, Scene~2).}
+    \caption{Architectural Speedup (Java Batch Baseline vs. Java Streaming) for Woven WTS Dataset (4 cameras, Scene~2). Streaming statistics (Mean $\pm$ Std. Dev.) computed over 25 per-window measurements within a single cumulative run; batch values are from a single cumulative measurement.}
     \label{tab:performance_combined}
     \resizebox{\linewidth}{!}{
     \begin{tabular}{@{}l|rrr@{}}
         \toprule
-        \textbf{Pipeline Stage} & \textbf{Batch (ms)} & \textbf{Streaming (ms)} & \textbf{Speedup} \\ \midrule
-        Measure World Coordinates & 8.65 & 1.25 & \textbf{6.9$\times$} \\
-        Representative Selection & 10235.16 & 34.06 & \textbf{300.5$\times$} \\
-        Re-ID Similarity Matrix & 65.08 & 3.67 & \textbf{17.7$\times$} \\
-        Matrix Zeroing & 6.09 & 0.03 & \textbf{214.4$\times$} \\
-        Similarity Replace (World) & 0.06 & 0.00 & \textbf{25.0$\times$} \\
-        Clustering (HAC) & 20366.55 & 86.16 & \textbf{236.4$\times$} \\
-        Global ID Assignment & 26.22 & 3.13 & \textbf{8.4$\times$} \\
+        \textbf{Pipeline Stage} & \textbf{Batch (ms)} & \textbf{Streaming (ms)} & \textbf{Speedup} \\
+        & & \textbf{Mean $\pm$ Std. Dev.} & \\ \midrule
+        Measure World Coordinates & 8.65 & $1.25 \pm 0.79$ & \textbf{6.9$\times$} \\
+        Representative Selection & 10235.16 & $34.06 \pm 36.52$ & \textbf{300.5$\times$} \\
+        Re-ID Similarity Matrix & 65.08 & $3.67 \pm 8.28$ & \textbf{17.7$\times$} \\
+        Matrix Zeroing & 6.09 & $0.03 \pm 0.03$ & \textbf{214.4$\times$} \\
+        Similarity Replace (World) & 0.06 & $0.00 \pm 0.01$ & \textbf{25.0$\times$} \\
+        Clustering (HAC) & 20366.55 & $86.16 \pm 68.86$ & \textbf{236.4$\times$} \\
+        Global ID Assignment & 26.22 & $3.13 \pm 1.97$ & \textbf{8.4$\times$} \\
         \midrule
-        Total MCPT Core & 30707.81 & 129.27 & \textbf{9.5$\times$} \\
-        Total MCPT (incl. Reassign) & 31202.58 & 129.27 & \textbf{9.7$\times$} \\
+        Total MCPT Core & 30707.81 & $128.31 \pm 92.24$ & \textbf{9.5$\times$} \\
+        Total MCPT (incl. Reassign) & 31202.58 & $129.27 \pm 92.49$ & \textbf{9.7$\times$} \\
         \bottomrule
     \end{tabular}
     }
 \end{table}
 
-The streaming architecture's advantage is most pronounced in the \textbf{Representative Selection} (Stage~2, batch: 10,235~ms vs. streaming: 34~ms per window on average) and \textbf{Clustering (HAC)} (Stage~6, batch: 20,367~ms vs. streaming: 86~ms). These stages are both I/O-intensive---reading pre-computed Re-ID features from disk---and compute-intensive---iterating over all pairwise tracklets in the batch case. The streaming engine exploits incremental windowing: features are pre-loaded and maintained in stateful tables, and only the new window's deltas are processed.
+The streaming architecture's advantage is most pronounced in the \textbf{Representative Selection} (Stage~2, batch: 10,235~ms vs. streaming: $34.06 \pm 36.52$~ms) and \textbf{Clustering (HAC)} (Stage~6, batch: 20,367~ms vs. streaming: $86.16 \pm 68.86$~ms). The standard deviations are substantial because the first two windows incur JVM Just-In-Time (JIT) compilation overhead; excluding them, steady-state Representative Selection drops to $31.46 \pm 36.97$~ms and Clustering to $84.71 \pm 71.69$~ms. These stages are both I/O-intensive---reading pre-computed Re-ID features from disk---and compute-intensive---iterating over all pairwise tracklets in the batch case. The streaming engine exploits incremental windowing: features are pre-loaded and maintained in stateful tables, and only the new window's deltas are processed.
 
-The \textbf{Similarity Matrix} stage (batch: 65~ms vs. streaming: 3.7~ms, 17.7$\times$ speedup) benefits from the same incremental access pattern. The batch pipeline loads and constructs the full feature matrix for all tracklets across all windows from scratch, whereas the streaming equivalent continuously maintains the intermediate matrix representation.
+The \textbf{Similarity Matrix} stage (batch: 65~ms vs. streaming: $3.67 \pm 8.28$~ms, 17.7$\times$ speedup) benefits from the same incremental access pattern. The batch pipeline loads and constructs the full feature matrix for all tracklets across all windows from scratch, whereas the streaming equivalent continuously maintains the intermediate matrix representation.
 
 Overall, the streaming architecture delivers a \textbf{9.7$\times$} end-to-end speedup (cumulative over 25 windows: 3,232~ms streaming vs. 31,203~ms batch core). These improvements stem from the architectural shift from batch-oriented processing---where each window incurs I/O and recomputation costs proportional to the full accumulated state---to incremental stream processing, where state lives in relational tables and per-window work is proportional only to newly arriving data.
 
