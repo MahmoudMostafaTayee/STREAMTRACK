@@ -713,13 +713,8 @@ Table~\ref{tab:performance_combined} summarizes the architectural speedup achiev
         \toprule
         \textbf{Pipeline Stage} & \textbf{Batch (ms)} & \textbf{Streaming (ms)} & \textbf{Speedup} \\
         & & \textbf{Mean $\pm$ Std. Dev.} & \\ \midrule
-        Measure World Coordinates & 8.65 & $1.25 \pm 0.79$ & \textbf{6.9$\times$} \\
         Representative Selection & 10235.16 & $34.06 \pm 36.52$ & \textbf{300.5$\times$} \\
-        Re-ID Similarity Matrix & 65.08 & $3.67 \pm 8.28$ & \textbf{17.7$\times$} \\
-        Matrix Zeroing & 6.09 & $0.03 \pm 0.03$ & \textbf{214.4$\times$} \\
-        Similarity Replace (World) & 0.06 & $0.00 \pm 0.01$ & \textbf{25.0$\times$} \\
         Clustering (HAC) & 20366.55 & $86.16 \pm 68.86$ & \textbf{236.4$\times$} \\
-        Global ID Assignment & 26.22 & $3.13 \pm 1.97$ & \textbf{8.4$\times$} \\
         Pipeline Overhead & 912.19 & --- & \textbf{---} \\
         \midrule
         Total MCPT & 31620.00 & $129.27 \pm 92.49$ & \textbf{9.8$\times$} \\
@@ -728,9 +723,9 @@ Table~\ref{tab:performance_combined} summarizes the architectural speedup achiev
     }
 \end{table}
 
-The streaming architecture's advantage is most pronounced in the \textbf{Representative Selection} (Stage~2, batch: 10,235~ms vs. streaming: $34.06 \pm 36.52$~ms) and \textbf{Clustering (HAC)} (Stage~6, batch: 20,367~ms vs. streaming: $86.16 \pm 68.86$~ms). The standard deviations are substantial because the first two windows incur JVM Just-In-Time (JIT) compilation overhead; excluding them, steady-state Representative Selection drops to $31.46 \pm 36.97$~ms and Clustering to $84.71 \pm 71.69$~ms. These stages are both I/O-intensive---reading pre-computed Re-ID features from disk---and compute-intensive---iterating over all pairwise tracklets in the batch case. The streaming engine exploits incremental windowing: features are pre-loaded and maintained in stateful tables, and only the new window's deltas are processed. The Pipeline Overhead row captures additional costs not broken out into individual stages, most notably the Global ID Reassignment post-processing step (~495~ms in batch) and miscellaneous I/O and bookkeeping. In the streaming pipeline these overheads are negligible (under 1~ms) and are subsumed within the per-stage timing variability.
+The streaming architecture's advantage is most pronounced in the two stages that dominate the total computation. \textbf{Representative Selection} (Stage~2, batch: 10,235~ms vs. streaming: $34.06 \pm 36.52$~ms) and \textbf{Clustering (HAC)} (Stage~6, batch: 20,367~ms vs. streaming: $86.16 \pm 68.86$~ms) together account for over 96\% of the batch MCPT time. The standard deviations are substantial because the first two windows incur JVM Just-In-Time (JIT) compilation overhead; excluding them, steady-state Representative Selection drops to $31.46 \pm 36.97$~ms and Clustering to $84.71 \pm 71.69$~ms. These stages are both I/O-intensive---reading pre-computed Re-ID features from disk---and compute-intensive---iterating over all pairwise tracklets in the batch case. The streaming engine exploits incremental windowing: features are pre-loaded and maintained in stateful tables, and only the new window's deltas are processed.
 
-The \textbf{Similarity Matrix} stage (batch: 65~ms vs. streaming: $3.67 \pm 8.28$~ms, 17.7$\times$ speedup) benefits from the same incremental access pattern. The batch pipeline loads and constructs the full feature matrix for all tracklets across all windows from scratch, whereas the streaming equivalent continuously maintains the intermediate matrix representation.
+The remaining pipeline stages---similarity matrix generation (65~ms in batch), matrix zeroing (6~ms), world-coordinate replacement ($<$1~ms), global ID assignment (26~ms), and world coordinate measurement (9~ms)---are collectively negligible in the batch total ($<$0.5\%) and subsumed within per-window timing variability in the streaming pipeline. The Pipeline Overhead row captures additional costs not broken out into individual stages, most notably the Global ID Reassignment post-processing step (~495~ms in batch) and miscellaneous I/O and bookkeeping.
 
 Overall, the streaming architecture delivers a \textbf{9.8$\times$} end-to-end speedup (cumulative over 25 windows: 3,232~ms streaming vs. 31,620~ms batch). These improvements stem from the architectural shift from batch-oriented processing---where each window incurs I/O and recomputation costs proportional to the full accumulated state---to incremental stream processing, where state lives in relational tables and per-window work is proportional only to newly arriving data.
 
