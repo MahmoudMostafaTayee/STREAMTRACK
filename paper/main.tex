@@ -20,6 +20,7 @@
 \usepackage{float}
 \usepackage{todonotes}
 \usepackage{tabularx}
+\usepackage{multirow}
 % -----------------------------
 % Metadata
 % -----------------------------
@@ -719,19 +720,19 @@ Table~\ref{tab:performance_combined} summarizes the architectural speedup achiev
         Similarity Replace (World) & 0.06 & $0.00 \pm 0.01$ & \textbf{25.0$\times$} \\
         Clustering (HAC) & 20366.55 & $86.16 \pm 68.86$ & \textbf{236.4$\times$} \\
         Global ID Assignment & 26.22 & $3.13 \pm 1.97$ & \textbf{8.4$\times$} \\
+        Pipeline Overhead & 912.19 & --- & \textbf{---} \\
         \midrule
-        Total MCPT Core & 30707.81 & $128.31 \pm 92.24$ & \textbf{9.5$\times$} \\
-        Total MCPT (incl. Reassign) & 31202.58 & $129.27 \pm 92.49$ & \textbf{9.8$\times$} \\
+        Total MCPT & 31620.00 & $129.27 \pm 92.49$ & \textbf{9.8$\times$} \\
         \bottomrule
     \end{tabular}
     }
 \end{table}
 
-The streaming architecture's advantage is most pronounced in the \textbf{Representative Selection} (Stage~2, batch: 10,235~ms vs. streaming: $34.06 \pm 36.52$~ms) and \textbf{Clustering (HAC)} (Stage~6, batch: 20,367~ms vs. streaming: $86.16 \pm 68.86$~ms). The standard deviations are substantial because the first two windows incur JVM Just-In-Time (JIT) compilation overhead; excluding them, steady-state Representative Selection drops to $31.46 \pm 36.97$~ms and Clustering to $84.71 \pm 71.69$~ms. These stages are both I/O-intensive---reading pre-computed Re-ID features from disk---and compute-intensive---iterating over all pairwise tracklets in the batch case. The streaming engine exploits incremental windowing: features are pre-loaded and maintained in stateful tables, and only the new window's deltas are processed.
+The streaming architecture's advantage is most pronounced in the \textbf{Representative Selection} (Stage~2, batch: 10,235~ms vs. streaming: $34.06 \pm 36.52$~ms) and \textbf{Clustering (HAC)} (Stage~6, batch: 20,367~ms vs. streaming: $86.16 \pm 68.86$~ms). The standard deviations are substantial because the first two windows incur JVM Just-In-Time (JIT) compilation overhead; excluding them, steady-state Representative Selection drops to $31.46 \pm 36.97$~ms and Clustering to $84.71 \pm 71.69$~ms. These stages are both I/O-intensive---reading pre-computed Re-ID features from disk---and compute-intensive---iterating over all pairwise tracklets in the batch case. The streaming engine exploits incremental windowing: features are pre-loaded and maintained in stateful tables, and only the new window's deltas are processed. The Pipeline Overhead row captures additional costs not broken out into individual stages, most notably the Global ID Reassignment post-processing step (~495~ms in batch) and miscellaneous I/O and bookkeeping. In the streaming pipeline these overheads are negligible (under 1~ms) and are subsumed within the per-stage timing variability.
 
 The \textbf{Similarity Matrix} stage (batch: 65~ms vs. streaming: $3.67 \pm 8.28$~ms, 17.7$\times$ speedup) benefits from the same incremental access pattern. The batch pipeline loads and constructs the full feature matrix for all tracklets across all windows from scratch, whereas the streaming equivalent continuously maintains the intermediate matrix representation.
 
-Overall, the streaming architecture delivers a \textbf{9.8$\times$} end-to-end speedup (cumulative over 25 windows: 3,232~ms streaming vs. 31,620~ms batch core). These improvements stem from the architectural shift from batch-oriented processing---where each window incurs I/O and recomputation costs proportional to the full accumulated state---to incremental stream processing, where state lives in relational tables and per-window work is proportional only to newly arriving data.
+Overall, the streaming architecture delivers a \textbf{9.8$\times$} end-to-end speedup (cumulative over 25 windows: 3,232~ms streaming vs. 31,620~ms batch). These improvements stem from the architectural shift from batch-oriented processing---where each window incurs I/O and recomputation costs proportional to the full accumulated state---to incremental stream processing, where state lives in relational tables and per-window work is proportional only to newly arriving data.
 
 \subsection{Topological Optimization: NVIDIA SmartSpaces Dataset}
 
@@ -808,7 +809,7 @@ These results validate the central thesis of this work: the scalability limitati
 
 By defining association as a join over a reconfigurable \texttt{CameraTopologyTable}, we eliminate the "search space explosion" that occurs in conventional MCOT implementations. This makes \textbf{STREAMTRACK} uniquely suited for large-scale urban deployments where the number of cameras can reach the thousands, yet each camera cluster remains small enough for sub-10ms processing. The bottleneck in our system is shifted from algorithmic complexity to local streaming I/O, providing a predictable and stable "Real-Time" guarantee that remains consistent even as the global camera network expands.
 
-Because both the batch baseline and the streaming implementation share the same JVM, math library (ND4J/OpenBLAS), and heap configuration, these gains are purely architectural---they derive from the streams-and-tables design rather than from language-level performance differences. Overall, the system processes a 4-camera window in approximately 129~ms on average (streaming) vs.~1,248~ms (batch core per-window average), demonstrating robust capability for real-time operation in diverse multi-camera environments.
+Because both the batch baseline and the streaming implementation share the same JVM, math library (ND4J/OpenBLAS), and heap configuration, these gains are purely architectural---they derive from the streams-and-tables design rather than from language-level performance differences. Overall, the system processes a 4-camera window in approximately 129~ms on average (streaming) vs.~1,265~ms (batch per-window average), demonstrating robust capability for real-time operation in diverse multi-camera environments.
 
 
 
@@ -822,7 +823,7 @@ Expressing MCOT as continuous queries provides significant operational benefits.
 Despite the high performance, certain challenges remain. Extremely crowded scenes may still lead to similarity ambiguities that even topological gating cannot resolve. Furthermore, rapid lighting changes or occlusions can cause embedding drift, requiring more sophisticated online re-training of the appearance models—a direction for future work.
 
 \subsection{Deployment Considerations}
-The streaming architecture naturally supports edge-to-cloud partitioning. Since the single-camera tracking stage (SCPT) operates independently per camera and emits compact \texttt{SingleCameraResult} events, it can be deployed at the edge, while the topology-aware joins and global clustering are centralized in a CEP engine. Our benchmarks show that the MCPT clustering stage processes a 4-camera window in 129~ms on average (streaming) vs.~1,248~ms (batch core per-window average) on the Woven WTS dataset, and a topology-aware group averaging $10.10 \pm 11.11$ ms per call ($9.15 \pm 8.27$ ms excluding JIT warm-up; see Table~\ref{tab:9camera_performance}), confirming that even edge devices with modest compute can handle the centralized association workload. This partitioning reduces backhaul bandwidth from raw video streams to lightweight feature events while maintaining a global view of person identities.
+The streaming architecture naturally supports edge-to-cloud partitioning. Since the single-camera tracking stage (SCPT) operates independently per camera and emits compact \texttt{SingleCameraResult} events, it can be deployed at the edge, while the topology-aware joins and global clustering are centralized in a CEP engine. Our benchmarks show that the MCPT clustering stage processes a 4-camera window in 129~ms on average (streaming) vs.~1,265~ms (batch per-window average) on the Woven WTS dataset, and a topology-aware group averaging $10.10 \pm 11.11$ ms per call ($9.15 \pm 8.27$ ms excluding JIT warm-up; see Table~\ref{tab:9camera_performance}), confirming that even edge devices with modest compute can handle the centralized association workload. This partitioning reduces backhaul bandwidth from raw video streams to lightweight feature events while maintaining a global view of person identities.
 
 \section{Related Work}\label{sec:related}
 
