@@ -71,6 +71,10 @@ public class EmbeddingFeatureStreamer {
                 if (TrackingParameters.reconfigExperiment && framesStreamed == 360) {
                     triggerCameraRecovery();
                 }
+                // Runtime parameter reconfiguration demo: tweak MCPT parameters mid-stream
+                if (TrackingParameters.reconfigExperiment && framesStreamed == 270) {
+                    triggerConfigChanges();
+                }
                 boolean anySceneHasMore = false;
                 for (Map.Entry<Path, Map<Path, List<Path>>> sceneEntry : sceneData.entrySet()) {
                     Path scenePath = sceneEntry.getKey();
@@ -107,6 +111,10 @@ public class EmbeddingFeatureStreamer {
                 }
                 if (TrackingParameters.reconfigExperiment && framesStreamed == 360) {
                     triggerCameraRecovery();
+                }
+                // Runtime parameter reconfiguration demo: tweak MCPT parameters mid-stream
+                if (TrackingParameters.reconfigExperiment && framesStreamed == 270) {
+                    triggerConfigChanges();
                 }
                 for (Map.Entry<Path, Map<Path, List<Path>>> sceneEntry : sceneData.entrySet()) {
                     Path scene = sceneEntry.getKey();
@@ -618,6 +626,40 @@ public class EmbeddingFeatureStreamer {
         EventEPLUtil.streamEvent(join4, "CameraTopology");
 
         logger.info("Camera 30 recovery events successfully streamed into the Esper pipeline!");
+        logger.info("==========================================================================");
+    }
+
+    /**
+     * Demonstrates runtime MCPT parameter reconfiguration by sending
+     * {@code MCPTConfig} events into the pipeline while streaming is active.
+     * <p>
+     * Each event is upserted into {@code MCPTConfigTable} and the reactive
+     * listener in {@code IotMain} immediately updates the corresponding
+     * {@code TrackingParameters} static field. The next MCPT invocation picks
+     * up the new values.
+     */
+    private static void triggerConfigChanges() {
+        logger.info("==========================================================================");
+        logger.info("RUNTIME MCPT PARAMETER RECONFIGURATION");
+        logger.info("Changing tracking parameters in mid-stream...");
+        logger.info("==========================================================================");
+
+        // Tighten similarity threshold for stricter matching
+        EventEPLUtil.streamEvent(
+                new com.espertech.esper.example.IOT.streams.MCPTConfigEvent("simTh", "0.85", "double"),
+                "MCPTConfig");
+
+        // Reduce epsilon for tighter clustering
+        EventEPLUtil.streamEvent(
+                new com.espertech.esper.example.IOT.streams.MCPTConfigEvent("epsilonMcpt", "0.30", "double"),
+                "MCPTConfig");
+
+        // Shorten track threshold to prune more aggressively
+        EventEPLUtil.streamEvent(
+                new com.espertech.esper.example.IOT.streams.MCPTConfigEvent("shortTrackTh", "1", "int"),
+                "MCPTConfig");
+
+        logger.info("Runtime config changes successfully streamed (simTh=0.85, epsilonMcpt=0.30, shortTrackTh=1)");
         logger.info("==========================================================================");
     }
 }

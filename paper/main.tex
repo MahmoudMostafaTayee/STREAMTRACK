@@ -762,7 +762,7 @@ Because the Java Virtual Machine (JVM) employs Just-In-Time (JIT) compilation, t
 
 \subsection{Runtime Topology Reconfiguration (RQ3)}
 
-A distinctive operational advantage of \textbf{STREAMTRACK} is its ability to reconfigure the camera network topology at runtime---without any pipeline downtime, restart, or loss of tracking state. Because camera neighborhoods are maintained as a relational \texttt{CameraTopologyTable} rather than hardcoded logic, operators can add, remove, or reassign camera links by simply injecting \texttt{CameraTopology} events into the live stream. The system's reactive reconciliation loop automatically detects the change, recomputes the Connected Components of the neighborhood graph, and atomically deploys the updated EPL aggregation queries.
+A distinctive operational advantage of \textbf{STREAMTRACK} is its ability to reconfigure the camera network topology at runtime---without any pipeline downtime, restart, or loss of tracking state. Because camera neighborhoods are maintained as a relational \texttt{CameraTopologyTable} rather than hardcoded logic, operators can add, remove, or reassign camera links by simply injecting \texttt{CameraTopology} events into the live stream. The system's reactive reconciliation loop (\texttt{reconcileDeployments()}) automatically detects the change, recomputes the Connected Components of the updated neighborhood graph, and atomically reconciles the deployed EPL aggregation queries. The end-to-end reconfiguration time reported in this section encompasses all three operations: (i) recomputing the Connected Components of the \texttt{CameraTopologyTable}, (ii) undeploying EPL statements for camera groups that are no longer present in the topology, and (iii) deploying new EPL statements for the newly formed groups.
 
 \paragraph{Key Features of Runtime Reconfiguration.}
 \begin{itemize}[leftmargin=*]
@@ -772,18 +772,56 @@ A distinctive operational advantage of \textbf{STREAMTRACK} is its ability to re
     \item \textbf{State Preservation:} The \texttt{GlobalIDTable} and all accumulated tracking state are fully preserved across the reconfiguration boundary.
 \end{itemize}
 
-We validated this capability on the NVIDIA SmartSpaces network. The pipeline was initialized with the four-group topology shown in the pre-reconfiguration state of Figure~\ref{fig:reconfig_before_after} and processed two synchronization windows (frames 1--180). At frame 180, a reconfiguration event was injected---\emph{without pausing or restarting the pipeline}---executing two simultaneous changes: (i) a \textbf{group split} (disabling the link between cameras 01 and 11) and (ii) a \textbf{group merge} (enabling a new link between cameras 17 and 19, merging two groups into a single four-camera cluster). Figure~\ref{fig:reconfig_before_after} visualizes this reconfiguration transition on the actual floor plan.
+We validated this capability on the NVIDIA SmartSpaces network by simulating a \textbf{camera network outage and recovery} scenario. The pipeline was initialized with the four-group topology shown in the pre-reconfiguration state of Figure~\ref{fig:reconfig_before_after} and processed two synchronization windows (frames 1--180). At frame~180, a reconfiguration event was injected---\emph{without pausing or restarting the pipeline}---simulating a network outage that disconnects Camera~30 from its topological group (disabling links 21--30 and 25--30). This causes Camera~30 to split from the \mbox{[21, 25, 30]} cluster into a standalone group, while all other groups remain unaffected. At frame~360, a second reconfiguration event restores the links, re-merging Camera~30 back into its original group (recovery). Figure~\ref{fig:reconfig_before_after} visualizes this transition on the actual floor plan.
 
 \begin{figure}[H]
     \centering
     \includegraphics[width=0.9\linewidth]{Evidence/map_reconfig_combined.png}
-    \caption{Runtime topology reconfiguration on the NVIDIA SmartSpaces floor plan. The left panel shows the initial four-group topology, and the right panel shows the reconfigured state after a group split (cameras 01 and 11) and a group merge (cameras 17 and 19). The transition completed in \textbf{464 ms} with \textbf{zero downtime} or interruptions to the tracking pipeline.}
+    \caption{Runtime topology reconfiguration on the NVIDIA SmartSpaces floor plan. The left panel shows the initial four-group topology; the right panel shows the state after a Camera~30 network outage, where it is isolated as a standalone group (red). The outage transition completed in \textbf{337~ms} and the subsequent recovery in \textbf{190~ms}, both with \textbf{zero downtime}.}
     \label{fig:reconfig_before_after}
 \end{figure}
 
 \paragraph{Quantitative Results.}
-The entire reconfiguration cycle completed in \textbf{464~ms}---a negligible overhead relative to the 3-second synchronization window---with zero pipeline interruptions and zero post-reconfiguration errors. Following the transition, the pipeline successfully processed the subsequent windows (Windows 2--5) under the new topology, preserving all tracking states while handling up to \textbf{58 tracklets} in the newly-merged four-camera group.
+Table~\ref{tab:reconfiguration_timings} summarizes the end-to-end reconfiguration times measured across the different types of topology changes encountered in the experiment. The initial deployment (adding all 8 individual camera groups) takes 1759~ms, which includes JVM warm-up and initial EPL compilation overhead. The subsequent topology-aware merges---which correspond conceptually to ``add link'' operations---complete in 170--191~ms each. The outage (``disable link'') and recovery (``re-link'') transitions complete in 337~ms and 190~ms, respectively. All reconfiguration times are negligible relative to the 3-second synchronization window.
 
+\begin{table}[H]
+    \centering
+    \caption{End-to-end reconfiguration timing across topology change types. All measurements include Connected Components recomputation, EPL undeployment, and EPL deployment.}
+    \label{tab:reconfiguration_timings}
+    \begin{tabular}{@{}lccc@{}}
+        \toprule
+        \textbf{Reconfiguration Type} & \textbf{Operation} & \textbf{Deploy/Undeploy} & \textbf{Time} \\ \midrule
+        Initial deployment & Add all cameras & 8 deployed, 0 undeployed & 1759~ms \\
+        Topology merge ([\ldots, 0011]) & Add link & 1 deployed, 2 undeployed & 191~ms \\
+        Topology merge ([\ldots, 0027]) & Add link & 1 deployed, 2 undeployed & 189~ms \\
+        Topology merge ([\ldots, 0021]) & Add link & 1 deployed, 2 undeployed & 170~ms \\
+        Topology merge ([\ldots, 0030]) & Add link & 1 deployed, 2 undeployed & 181~ms \\
+        Camera outage (frame~180) & Disable link & 2 deployed, 1 undeployed & 337~ms \\
+        Camera recovery (frame~360) & Re-link & 1 deployed, 2 undeployed & 190~ms \\ \bottomrule
+    \end{tabular}
+\end{table}
+
+\paragraph{State Preservation Evidence.}
+To verify that no tracking state was lost during the reconfiguration events, we inspected the \texttt{GlobalIDTable} before and after each transition. Table~\ref{tab:global_id_evidence} shows the Global IDs observed in the \texttt{camera\_0011} processing window before the outage (Window~2, frames~181--270), after the outage (Window~3, frames~271--360), and after recovery (Window~4, frames~361--450). All six Global IDs (1--6) are continuously present across all three windows, confirming that the tracking identities survived both the outage and the recovery intact. Furthermore, after the recovery re-merges Camera~30 back into \mbox{[21, 25, 30]}, the \texttt{camera\_0025} Global ID table adds Global ID~7 while preserving Global IDs 1--6, showing that new identities can be created normally after reconfiguration.
+
+\begin{table}[H]
+    \centering
+    \caption{Global IDs present in the \texttt{GlobalIDTable} before the outage (Window~2), after the outage (Window~3), and after recovery (Window~4). The same six Global IDs persist across all three windows, confirming stateful continuity.}
+    \label{tab:global_id_evidence}
+    \begin{tabular}{@{}lcl@{}}
+        \toprule
+        \textbf{Window} & \textbf{Global IDs Present} & \textbf{Event} \\ \midrule
+        Window~2 (frames~181--270) & 1, 2, 3, 4, 5, 6 & Before outage \\
+        Window~3 (frames~271--360) & 1, 2, 3, 4, 5, 6 & After outage \\
+        Window~4 (frames~361--450) & 1, 2, 3, 4, 5, 6 & After recovery \\ \bottomrule
+    \end{tabular}
+\end{table}
+
+
+\paragraph{Beyond Topology: Runtime Parameter Reconfiguration.}
+The same event-driven reconfiguration pattern extends beyond topology to the behavioral parameters of the tracking algorithm itself. Just as camera neighborhoods are maintained in the \texttt{CameraTopologyTable}, all MCPT parameters---including the similarity threshold \texttt{simTh}, the clustering radius \texttt{epsilonMcpt}, the distance metric \texttt{distanceType}, and the representative selection method---are stored in a separate \texttt{MCPTConfigTable} and can be updated at runtime by injecting \texttt{MCPTConfig} events into the live stream. A reactive listener immediately applies the change to the corresponding static field, and the next synchronization window automatically picks up the new values because the MCPT invocation reads fresh parameter values on every call.
+
+To demonstrate this, we inject three parameter changes at frame~270 (mid-way through the experiment, between the outage and recovery events): (i) tightening the similarity threshold from \texttt{simTh = 0.75} to \texttt{0.85}, (ii) reducing the clustering radius from \texttt{epsilonMcpt = 0.37} to \texttt{0.30}, and (iii) increasing the short-track pruning threshold from \texttt{shortTrackTh = 0} to \texttt{1}. All three changes are applied reactively through the same \texttt{MCPTConfigTable} infrastructure, with no pipeline restart, no code modification, and no loss of accumulated tracking state. This illustrates that the streams-and-tables architecture can serve as a general substrate for runtime-tunable multi-camera tracking, where operators can adapt both the network topology \emph{and} the algorithmic behaviour on the fly.
 
 \subsection{Overall Performance Analysis}
 
@@ -830,7 +868,7 @@ Among online challenge entrants, Kim et al.~\cite{kim2024cluster} (Nota, 3rd pla
 Unlike these approaches, \textbf{STREAMTRACK} does not employ global per-frame bipartite matching cascades or separate offline correction passes. Instead, we express the association logic as continuous SQL/EPL queries over relational state tables (\texttt{GlobalIDTable}, \texttt{CameraTopologyTable}). Identity switches and stale tracks are resolved incrementally via priority-ordered EPL timer queries, and the search space is pruned from global $O(N^2)$ comparisons to $O(N)$ locally via topology-aware stream joins---preserving absolute functional accuracy while delivering a 9.8$\times$ overall speedup over an equivalent JVM batch baseline.
 
 \paragraph{Online vs.\ Offline Tracking and Scalability.}
-Multi-camera tracking systems are broadly classified as \emph{offline} (batch) or \emph{online} (incremental). Offline methods~\cite{yoshida2024overlap} leverage global optimization over entire video sequences, exploiting future frames for higher accuracy but at latencies that preclude real-time deployment. Online methods~\cite{kim2024cluster,xie2024robust,specker2024ocmctrack} process observations causally, yet even these ``online'' solutions typically rely on internal batch windows for cross-camera association, accumulating detections over fixed intervals before performing global clustering. Critically, \emph{scalability} in the MCPT literature is almost exclusively treated as a computer-vision concern (handling denser crowds, more detections) rather than a \emph{systems} concern (adding cameras, reconfiguring topology, maintaining state under growth). Our work is orthogonal to these accuracy-centric advances: we take an existing offline pipeline and re-architect it as a streaming program, preserving its functional output while gaining systems-level properties---scalability via topology-aware partitioning ($4.16\times$ latency reduction at 9 cameras, or $4.27\times$ in steady state), inspectability via queryable state tables, and reconfigurability via live topology updates (464\,ms reconfiguration with zero downtime).
+Multi-camera tracking systems are broadly classified as \emph{offline} (batch) or \emph{online} (incremental). Offline methods~\cite{yoshida2024overlap} leverage global optimization over entire video sequences, exploiting future frames for higher accuracy but at latencies that preclude real-time deployment. Online methods~\cite{kim2024cluster,xie2024robust,specker2024ocmctrack} process observations causally, yet even these ``online'' solutions typically rely on internal batch windows for cross-camera association, accumulating detections over fixed intervals before performing global clustering. Critically, \emph{scalability} in the MCPT literature is almost exclusively treated as a computer-vision concern (handling denser crowds, more detections) rather than a \emph{systems} concern (adding cameras, reconfiguring topology, maintaining state under growth). Our work is orthogonal to these accuracy-centric advances: we take an existing offline pipeline and re-architect it as a streaming program, preserving its functional output while gaining systems-level properties---scalability via topology-aware partitioning ($4.16\times$ latency reduction at 9 cameras, or $4.27\times$ in steady state), inspectability via queryable state tables, and reconfigurability via live topology updates (337\,ms outage, 190\,ms recovery, with zero downtime).
 
 \paragraph{Industrial Video Analytics Frameworks.}
 NVIDIA DeepStream~\cite{nvidia2024deepstream} is the dominant industrial SDK for GPU-accelerated video analytics. Built on GStreamer, it provides a modular pipeline of hardware-accelerated plugins for decoding, inference, and single-camera tracking (NvDCF, DeepSORT, IOU). However, its native trackers operate within a single camera stream; cross-camera identity association requires an external microservice layer. NVIDIA Metropolis~\cite{nvidia2025metropolis} addresses this gap with a Kubernetes-based reference architecture that decomposes multi-camera tracking into containerized microservices communicating via message brokers. While Metropolis provides a scalable deployment model, it remains a heavyweight, opaque infrastructure: association logic is embedded in compiled services rather than expressed as declarative queries, intermediate tracking state is not directly queryable for debugging, and reconfiguring the camera network typically requires container re-deployment or manual API calls rather than a single streaming event. In contrast, \textbf{STREAMTRACK} expresses association as parameterized SQL/EPL joins over a relational topology table, enabling zero-downtime reconfiguration, SQL-based state inspection, and a lightweight single-process deployment.

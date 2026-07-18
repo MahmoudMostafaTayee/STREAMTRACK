@@ -99,6 +99,10 @@ public class IotMain implements Runnable {
         EventEPLUtil.addEventType("CameraTopology",
                 com.espertech.esper.example.IOT.streams.CameraTopology.class);
 
+        // Register MCPTConfigEvent for runtime parameter reconfiguration
+        EventEPLUtil.addEventType("MCPTConfig",
+                com.espertech.esper.example.IOT.streams.MCPTConfigEvent.class);
+
         logger.info("Setting up runtime");
         EventEPLUtil.initiateRuntime();
     }
@@ -202,6 +206,7 @@ public class IotMain implements Runnable {
 
         prepareCalibrationQueries();
         prepareTopologyQueries();
+        prepareConfigQueries();
         EventEPLUtil.deployAll(); // Commit tables before listeners are compiled
 
         embeddingFeatureQueries();
@@ -211,6 +216,9 @@ public class IotMain implements Runnable {
         for (com.espertech.esper.example.IOT.streams.CameraTopology t : initialTopology) {
             EventEPLUtil.streamEvent(t, "CameraTopology");
         }
+
+        // Bootstrap the MCPTConfigTable with current CLI-parsed values
+        streamInitialConfigEvents();
 
         if (!TrackingParameters.turboMode) {
             socketServer.waitForFirstClient();
@@ -363,6 +371,120 @@ public class IotMain implements Runnable {
             return "camera_" + token;
         }
         return token;
+    }
+
+    // =========================================================================
+    // Runtime MCPT Parameter Reconfiguration (Event → EPL Table → Listener)
+    // =========================================================================
+
+    /**
+     * Creates the EPL table for runtime MCPT parameter overrides and sets up
+     * the MERGE upsert that listens for incoming {@code MCPTConfig} events.
+     * <p>
+     * When a parameter changes, a listener updates the corresponding
+     * {@code TrackingParameters} static field so the <b>next</b> MCPT
+     * invocation picks it up immediately. The table itself is queryable at any
+     * time by other EPL statements.
+     */
+    private void prepareConfigQueries() {
+        // EPL table: one row per parameter identified by paramName
+        EventEPLUtil.addEpl("create table MCPTConfigTable (paramName string primary key, paramValue string, paramType string);");
+
+        // MERGE upsert: new MCPTConfig events update existing rows or insert new ones
+        EventEPLUtil.addEpl(
+            "on MCPTConfig as cfg " +
+            "merge into MCPTConfigTable as target " +
+            "where target.paramName = cfg.paramName " +
+            "when matched then " +
+            "  update set target.paramValue = cfg.paramValue, target.paramType = cfg.paramType " +
+            "when not matched then " +
+            "  insert select cfg.paramName as paramName, cfg.paramValue as paramValue, cfg.paramType as paramType;"
+        );
+
+        // Reactive listener: on every MCPTConfig event, apply the change to TrackingParameters statics
+        // This also triggers the initial bootstrap stream later.
+        String listenerEPL = "select * from MCPTConfig";
+        EventEPLUtil.compileDeployAddListener(listenerEPL, (newEvents, oldEvents, statement, runtime) -> {
+            if (newEvents != null) {
+                for (EventBean event : newEvents) {
+                    String name = (String) event.get("paramName");
+                    String value = (String) event.get("paramValue");
+                    String type = (String) event.get("paramType");
+                    applyRuntimeParameter(name, value, type);
+                }
+            }
+        });
+    }
+
+    /**
+     * Reflectively updates a {@code TrackingParameters} static field based on
+     * the runtime {@code MCPTConfig} event's type hint.
+     * <p>
+     * Supported types: {@code double}, {@code int}, {@code boolean}, {@code string}.
+     */
+    private static void applyRuntimeParameter(String paramName, String paramValue, String paramType) {
+        try {
+            java.lang.reflect.Field field = com.espertech.esper.example.IOT.helpers.TrackingParameters.class.getField(paramName);
+            switch (paramType) {
+                case "double":
+                    field.setDouble(null, Double.parseDouble(paramValue));
+                    break;
+                case "int":
+                    field.setInt(null, Integer.parseInt(paramValue));
+                    break;
+                case "boolean":
+                    field.setBoolean(null, Boolean.parseBoolean(paramValue));
+                    break;
+                case "string":
+                default:
+                    field.set(null, paramValue);
+                    break;
+            }
+            logger.info("Runtime config: {} = {} (type={})", paramName, paramValue, paramType);
+        } catch (NoSuchFieldException e) {
+            logger.warn("Runtime config: unknown parameter '{}' — ignoring", paramName);
+        } catch (IllegalAccessException e) {
+            logger.warn("Runtime config: cannot set '{}' — access denied", paramName);
+        } catch (NumberFormatException e) {
+            logger.warn("Runtime config: cannot parse '{}' as {} for parameter '{}'", paramValue, paramType, paramName);
+        }
+    }
+
+    /**
+     * Bootstraps the {@code MCPTConfigTable} with the current CLI-parsed values
+     * so the table is always authoritative (and queryable). Each parameter is
+     * streamed as an {@code MCPTConfig} event, which triggers the MERGE upsert
+     * and the reactive listener.
+     * <p>
+     * Add or remove parameters here to expose them for runtime reconfiguration.
+     */
+    private static void streamInitialConfigEvents() {
+        // Format: (paramName, paramValue, paramType)
+        streamConfigEvent("epsilonMcpt",               String.valueOf(TrackingParameters.epsilonMcpt),               "double");
+        streamConfigEvent("shortTrackTh",              String.valueOf(TrackingParameters.shortTrackTh),              "int");
+        streamConfigEvent("keypointTh",                String.valueOf(TrackingParameters.keypointTh),                "double");
+        streamConfigEvent("keypointConditionTh",       String.valueOf(TrackingParameters.keypointConditionTh),       "int");
+        streamConfigEvent("replaceSimilarityByWCoordinate", String.valueOf(TrackingParameters.replaceSimilarityByWCoordinate), "boolean");
+        streamConfigEvent("distanceType",              TrackingParameters.distanceType,                              "string");
+        streamConfigEvent("distanceTh",                String.valueOf(TrackingParameters.distanceTh),                "double");
+        streamConfigEvent("simTh",                     String.valueOf(TrackingParameters.simTh),                     "double");
+        streamConfigEvent("aspectTh",                  String.valueOf(TrackingParameters.aspectTh),                  "double");
+        streamConfigEvent("replaceValue",              String.valueOf(TrackingParameters.replaceValue),              "double");
+        streamConfigEvent("clustering_method",         TrackingParameters.clustering_method,                         "string");
+        streamConfigEvent("representativeSelectionMethod", TrackingParameters.representativeSelectionMethod,         "string");
+        streamConfigEvent("overlap_suppression",       String.valueOf(TrackingParameters.overlap_suppression),       "boolean");
+        streamConfigEvent("iouTh",                     String.valueOf(TrackingParameters.iouTh),                     "double");
+        streamConfigEvent("reassign_global_id",        String.valueOf(TrackingParameters.reassign_global_id),        "boolean");
+        streamConfigEvent("delete_few_camera_cluster", String.valueOf(TrackingParameters.delete_few_camera_cluster), "boolean");
+        streamConfigEvent("min_samples",               String.valueOf(TrackingParameters.min_samples),               "int");
+        streamConfigEvent("epsilonScpt",               String.valueOf(TrackingParameters.epsilonScpt),               "double");
+        logger.info("MCPTConfigTable bootstrapped with {} parameters from CLI configuration.", 18);
+    }
+
+    private static void streamConfigEvent(String name, String value, String type) {
+        com.espertech.esper.example.IOT.streams.MCPTConfigEvent evt =
+                new com.espertech.esper.example.IOT.streams.MCPTConfigEvent(name, value, type);
+        EventEPLUtil.streamEvent(evt, "MCPTConfig");
     }
 
     private void embeddingFeatureQueries() {
