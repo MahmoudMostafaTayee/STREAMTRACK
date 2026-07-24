@@ -735,7 +735,7 @@ During global association, before computing appearance similarities between acti
 where $T_H$ is the historical track, $C_{curr}$ the cameras containing the current cluster, $E_{\text{overlap}}$ the overlapping edges, and $E_{\text{transition}}$ the transition paths.
 
 When a person leaves \texttt{camera\_12}(Figure~\ref{fig:transition_flow}), their last-seen camera in the \texttt{GlobalIDTable} is set to \texttt{camera\_12}; when a tracklet appears in \texttt{camera\_02}, \texttt{camera\_13}, or \texttt{camera\_17}, the gate admits the comparison and the global ID is preserved across the non-overlapping gap. All other cameras are bypassed, keeping the search localised and avoiding false positives in distant parts of the network.
-\todo{In the figure, the dots for cameras 17 and 13 are indistinguishable}
+\todo{[done]In the figure, the dots for cameras 17 and 13 are indistinguishable}
 \begin{figure}[htb!]
     \centering
     \includegraphics[width=0.65\linewidth]{Evidence/map_transition_flow.png}
@@ -823,7 +823,7 @@ questions:
     effect---incremental processing against relational state versus per-window
     recomputation---from language and library effects. Answered in
     Sections~\ref{sec:eval:speedup} and~\ref{sec:eval:overall}.
-    % TODO[Student]: if a cameras-vs-latency scaling curve (e.g., topology-aware latency at
+    % TODO[Student[An experiment that could be considered later to generate scalability on new dimension]]: if a cameras-vs-latency scaling curve (e.g., topology-aware latency at
     % 4, 6, 9 cameras using group subsets) can be produced, we can restore a stronger RQ4
     % phrasing that includes "scale with the number of cameras". Without such a curve, the
     % current phrasing matches exactly what is measured.
@@ -836,7 +836,7 @@ varying camera-graph sparsity and topology updates during execution. Quantitativ
 focuses on systems-level metrics: per-stage and end-to-end latency, cumulative cost over
 successive windows, reconfiguration time, and state continuity across reconfiguration events.
 
-%TODO[Student]: please fix/add these labels
+%TODO[Student[done]]: please fix/add these labels
 % NOTE (renumbering): the subsection labels referenced above must be added to the
 % corresponding evaluation subsections:
 %   \label{sec:eval:parity}    -> "Implementation Parity and Functional Accuracy"
@@ -878,6 +878,7 @@ Both the JVM batch baseline and the streaming architecture were executed on this
 
 
 \subsection{Implementation Parity and Functional Accuracy}
+\label{sec:eval:parity}
 Before evaluating performance gains, we first verify that the proposed streaming architecture preserves tracking quality. Both implementations consume the identical set of pre-extracted feature embeddings per detection window, ensuring that any measured performance differences are architectural and not due to input variation. We evaluate the \emph{Implementation Parity} between the streaming streams-and-tables architecture and the JVM-native batch baseline using a serialized cross-implementation mapping method. Since the two implementations assign serial numbers in a different order (due to incremental vs. batch processing order), we align representative nodes by their unique per-tracklet serial numbers before computing all comparison metrics. Functional equivalence is quantified across five pipeline stages, spanning the full processing chain from numerical computation to final identity assignment:
 
 \begin{itemize}[leftmargin=*]
@@ -969,6 +970,7 @@ While the streaming machine learning literature often suggests specialised algor
 The significantly higher latency of CluStream is attributed to the framework initialisation cost and the overhead of micro-clustering management, given the small $N$ per window. Furthermore, micro-clustering summaries "blur" person-specific appearance features, leading to identity merges in dense crowds where HAC maintains distinct clusters. Consequently, HAC is the only viable candidate for maintaining the functional parity reported in Table~\ref{tab:parity_metrics}.
 
 \subsection{System Benchmark: Architectural Speedup}
+\label{sec:eval:speedup}
 
 We benchmark the fundamental performance of the proposed streams-and-tables architecture against a functionally equivalent JVM-native batch implementation of the same MCPT pipeline. Both systems are written in Java and run on the same JVM (JBR-21.0.8, heap ~256 MB) on the same workstation, isolating the architectural speedup from the confounding effects of language, runtime, and math library. The evaluation is conducted on the Woven VisionAI WTS dataset~\cite{kong2024wts} (Scene~2, cameras 0001, 0011, 0017, 0019) over 25 consecutive synchronisation windows.
 
@@ -1017,6 +1019,7 @@ The remaining stages are individually negligible in the batch total ($<$0.5\% co
 Overall, the streaming architecture delivers a \textbf{9.8$\times$} end-to-end speedup (cumulative over 25 windows: 3,232~ms streaming vs. 31,620~ms batch). These improvements stem from the architectural shift from batch-oriented processing---where each window incurs I/O and recomputation costs proportional to the full accumulated state---to incremental stream processing, where state lives in relational tables and per-window work is proportional only to newly arriving data.
 
 \subsection{Topological Optimisation: NVIDIA SmartSpaces Dataset}
+\label{sec:eval:topology}
 
 While the streaming architecture provides a significant baseline improvement, the computational complexity still scales with the number of tracklets in the aggregation window. By introducing \emph{Topology-Aware Stream Joins}, we further optimise the association search space by pruning the join predicates using camera proximity. Figure~\ref{fig:topology_map} visualises this approach, showing the spatial relationship of localised tracking groups.
 
@@ -1050,7 +1053,8 @@ dispersion reflects skew rather than instability.
 
 In steady state, the average latency is reduced to $9.15 \pm 8.27$\todo{Is this correct? plus-minus 8.27?} ms, illustrating the performance characteristics of our JIT-compiled streaming joins. This performance gain is primarily driven by reducing the number of tracklets processed per clustering call, localising the workload to each topological neighbourhood.
 
-\subsection{Runtime Topology Reconfiguration (RQ3)}
+\subsection{Runtime Topology Reconfiguration}
+\label{sec:eval:reconfig}
 
 A distinctive operational advantage of \textbf{STREAMTRACK} is its ability to reconfigure the camera network topology at runtime---without any pipeline downtime, restart, or loss of tracking state. Because camera neighbourhoods are maintained as a relational \texttt{CameraTopologyTable} rather than hardcoded logic, operators can add, remove, or reassign camera links by simply injecting \texttt{CameraTopology} events into the live stream. The system's reactive reconciliation loop (\texttt{reconcileDeployments()}), triggered by a listener on the \texttt{CameraTopology} event stream, automatically recomputes the Connected Components of the updated neighbourhood graph, and atomically reconciles the deployed EPL aggregation queries. The end-to-end reconfiguration time reported in this section encompasses all three operations: (i) recomputing the Connected Components of the neighbourhood graph, (ii) undeploying EPL statements for camera groups that are no longer present in the topology, and (iii) deploying new EPL statements for the newly formed groups.
 
@@ -1115,6 +1119,7 @@ The same event-driven reconfiguration pattern extends beyond topology to the beh
 To demonstrate this, we inject three parameter changes at frame~270 (mid-way through the experiment, between the outage and recovery events): (i) tightening the similarity threshold from \texttt{simTh = 0.75} to \texttt{0.85}, (ii) reducing the clustering radius from \texttt{epsilonMcpt = 0.37} to \texttt{0.30}, and (iii) increasing the short-track pruning threshold from \texttt{shortTrackTh = 0} to \texttt{1}. All three changes are applied reactively through the same \texttt{MCPTConfigTable} infrastructure, with no pipeline restart, no code modification, and no loss of accumulated tracking state. This illustrates that the streams-and-tables architecture can serve as a general substrate for runtime-tunable multi-camera tracking, where operators can adapt both the network topology \emph{and} the algorithmic behaviour on the fly.
 
 \subsection{Overall Performance Analysis}
+\label{sec:eval:overall}
 
 The benchmarking results across 25 consecutive data windows demonstrate that \textbf{STREAMTRACK} not only reduces single-window latency but also significantly improves total system throughput. Because both the streaming and batch implementations run on the same JVM (identical language, runtime, math library, and heap configuration), the measured speedup is purely architectural---attributable to the streams-and-tables design rather than cross-language implementation differences.
 
