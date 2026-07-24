@@ -560,12 +560,33 @@ These operators run independently per camera. They read only per-camera streams,
 This stage ingests per-camera detections and attaches appearance-embedding vectors extracted by a pre-trained Re-ID model, emitting the \texttt{embeddingFeature} stream (a stateless S2S map). For cameras that require world locations, a continuous listener populates the \texttt{CalibrationTable} with per-camera homography matrices at ingestion time. The table is subsequently \emph{read} by the native MCPT clustering kernel (Section~\ref{sec:multi:repselect}), which projects bounding-box foot-points from the 2D image plane to a unified ground-plane coordinate system, enabling spatial gating and distance-based heuristics during cross-camera association. Thus, the \texttt{CalibrationTable} is \emph{maintained} at ingestion but \emph{consumed} downstream, consistent with its attribution to the Representative Selection row in Table~\ref{tab:operatormodel}.
 
 
-Feature extraction happens at the ingestion boundary, before events enter Esper; each enriched detection is then streamed in under a per-camera event type:
-%TODO[Student]: Put proper EPL staements here.
+Feature extraction happens at the ingestion boundary, before events enter Esper; each enriched detection is then streamed in under a per-camera event type. The per-camera event types are declared as EPL schemas once at startup:
+%TODO[Student[done]]: Put proper EPL staements here.
 \begin{verbatim}
--- Features are extracted and attached before sending to Esper:
--- e.g., streamEvent(new embeddingFeature(...),
---                   "embeddingFeature_camera_0001");
+-- Per-camera event schema (one per camera, derived from the Java bean)
+create schema embeddingFeature_camera_0001 as
+    (timestamp long, curFrame int, detectedUsers java.util.List);
+\end{verbatim}
+Each camera gets its own event type name (\texttt{embeddingFeature\_camera\_0001}, \texttt{...0002}, etc.), which lets the downstream tracking EPL filter by stream name without adding a \texttt{cameraId} predicate to every query.
+
+A continuous listener populates the \texttt{CalibrationTable} at ingestion time so that homography matrices are available to the downstream MCPT kernel:
+\begin{verbatim}
+-- Define calibration state table
+create table CalibrationTable (
+    cameraId int primary key,
+    homographyMatrix Object
+);
+
+-- Populate from incoming CameraCalibration events
+insert into CalibrationTable
+select cameraId, homographyMatrix from CameraCalibration;
+\end{verbatim}
+Once per frame, the enriched detections (Re-ID embeddings attached) are streamed into the engine under their camera-specific event type. This is the sole Java-side boundary call (events originate from the file reader, not from another EPL stream):
+\begin{verbatim}
+// Ingestion boundary: extract features, then send to Esper
+EventEPLUtil.streamEvent(
+    new EmbeddingFeature(timestamp, frameNumber, detectedUsers),
+    "embeddingFeature_camera_0001");
 \end{verbatim}
 
 \subsection{Single-Camera Tracking as Stateful Stream Processing}
