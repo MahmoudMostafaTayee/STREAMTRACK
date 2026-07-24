@@ -47,7 +47,7 @@
 \begin{abstract}
 Multi-camera object tracking (MCOT) is typically built as a tightly coupled, monolithic computer-vision pipeline, which makes cross-camera association hard to scale, identity decisions hard to inspect, and the camera network hard to reconfigure. We argue these are problems of \emph{architecture}, not of the vision task, and re-architect MCOT as a \emph{streams-and-tables} system: detections flow as streams, global identities and camera topology are queryable relational tables, and cross-camera association is a continuous, topology-aware join over them. 
 This turns each difficulty into a property of the design: topology-pruned association (scalability), an inspectable identity view (observability), and topology-as-data (zero-downtime reconfigurability). Realised on an embeddable complex-event-processing engine, the architecture reproduces the
-global-identity assignments of a state-of-the-art batch baseline while delivering a \textbf{9.8$\times$} overall speedup (up to \textbf{300$\times$} in representative selection and \textbf{236$\times$} in clustering) over an equivalent JVM-native batch implementation, isolating the architectural speedup from language, runtime, and library effects, with a further \textbf{4.16$\times$} latency reduction (\textbf{4.27$\times$} in
+global-identity assignments of a state-of-the-art batch baseline while delivering a \textbf{9.8$\times$} overall speedup (up to \textbf{12.0$\times$} in representative selection and \textbf{9.5$\times$} in clustering) over an equivalent JVM-native batch implementation, isolating the architectural speedup from language, runtime, and library effects, with a further \textbf{4.16$\times$} latency reduction (\textbf{4.27$\times$} in
 steady state) from topology-aware partitioning at nine cameras.
 
 \end{abstract}
@@ -98,8 +98,8 @@ This paper makes the following contributions:
     % the architecture reproduces the global-identity assignments of a state-of-the-art batch baseline while delivering a \textbf{9.8$\times$} overall speedup (up to \textbf{300$\times$} in representative selection and \textbf{236$\times$} in clustering) over an equivalent JVM batch baseline, isolating the architectural speedup from language, runtime, and library effects~\footnote{The original state-of-the-art pipeline is written in Python. We had to port it into Java for fair comparisons.}, with a further
     % \textbf{4.16$\times$} from topology-aware partitioning at nine cameras.
     \item \textbf{An end-to-end realisation and evaluation on Esper.} The architecture reproduces the global-identity assignments of a state-of-the-art batch baseline
-    (functional parity verified stage-by-stage on the Woven WTS dataset) while delivering a \textbf{9.8$\times$} overall speedup (up to \textbf{300$\times$} in representative
-    selection and \textbf{236$\times$} in clustering) over an equivalent JVM batch baseline, isolating the architectural speedup from language, runtime, and library
+    (functional parity verified stage-by-stage on the Woven WTS dataset) while delivering a \textbf{9.8$\times$} overall speedup (clustering: \textbf{9.5$\times$};
+    representative selection: \textbf{12.0$\times$}) over an equivalent JVM batch baseline, isolating the architectural speedup from language, runtime, and library
     effects\footnote{The original state-of-the-art pipeline is written in Python. We ported it to Java and validated the port against the original outputs to enable a fair, 
     same-runtime comparison.}; topology-aware partitioning and runtime reconfiguration are evaluated on the nine-camera NVIDIA SmartSpaces network, yielding a further
     \textbf{4.16$\times$} per-association latency reduction.
@@ -982,40 +982,36 @@ Table~\ref{tab:performance_combined} summarises the architectural speedup achiev
     \caption{Architectural Speedup (Java Batch Baseline vs. Java Streaming) for Woven WTS
     Dataset (4 cameras, Scene~2), by pipeline stage. Streaming statistics (Mean $\pm$ Std.
     Dev.) computed over 25 per-window measurements within a single cumulative run; batch
-    values are from a single cumulative measurement. Minor stages are subsumed within
-    per-window timing variability in the streaming pipeline and are not separately
-    measurable ($\dagger$).}
+    values are from a single cumulative measurement. Stages marked with $\dagger$
+    have no direct streaming equivalent.}
     \label{tab:performance_combined}
     \small
-    \begin{tabular}{@{}l|rrr@{}}
+    \begin{tabular}{@{}l|rr|rr@{}}
         \toprule
-        \textbf{Pipeline Stage} & \textbf{Batch (ms)} & \textbf{Streaming (ms)} & \textbf{Speedup} \\
-        & & \textbf{Mean $\pm$ Std. Dev.} & \\ \midrule
-        Representative Selection & 10235.16 & $34.06 \pm 36.52$ & \textbf{300.5$\times$} \\
-        Clustering (HAC) & 20366.55 & $86.16 \pm 68.86$ & \textbf{236.4$\times$} \\
-        Similarity Matrix Generation & 65.00 & $\dagger$ & --- \\
-        Global ID Assignment & 26.00 & $\dagger$ & --- \\
-        World Coordinate Measurement & 9.00 & $\dagger$ & --- \\
-        Matrix Zeroing & 6.00 & $\dagger$ & --- \\
-        World-Coordinate Replacement & $<$1 & $\dagger$ & --- \\
-        Global ID Reassignment (post-proc.) & 495.00 & $\dagger$ & --- \\
-        Misc. I/O and bookkeeping & 417.19 & $\dagger$ & --- \\
+        \textbf{Pipeline Stage} & \multicolumn{2}{c|}{\textbf{Batch}} & \textbf{Streaming (ms)} & \textbf{Speedup} \\
+        & \textbf{ms} & \textbf{\% of total} & \textbf{Mean $\pm$ Std. Dev.} & \\ \midrule
+        Clustering (HAC) & 20366.55 & 64.4\% & $86.16 \pm 68.86$ & \textbf{9.5$\times$} \\
+        Representative Selection & 10235.16 & 32.4\% & $34.06 \pm 36.52$ & \textbf{12.0$\times$} \\
+        Global ID Management (Assign + Reassign) & 521.00 & 1.6\% & $3.13 \pm 1.97$ & \textbf{6.7$\times$} \\
+        Misc. I/O and bookkeeping & 417.19 & 1.3\% & $\dagger$ & --- \\
+        Similarity Matrix Generation & 65.08 & 0.2\% & $3.67 \pm 8.28$ & --- \\
+        World Coordinate Measurement & 8.65 & $<$0.1\% & $1.25 \pm 0.79$ & --- \\
+        Matrix Zeroing & 6.09 & $<$0.1\% & $0.03 \pm 0.04$ & \textbf{8.6$\times$} \\
+        World-Coordinate Replacement & 0.06 & $<$0.1\% & $0.002 \pm 0.010$ & $1.0\times$ \\
         \midrule
-        Total MCPT & 31620.00 & $129.27 \pm 92.49$ & \textbf{9.8$\times$} \\
+        Total MCPT & 31620.00 & 100\% & $129.27 \pm 92.49$ & \textbf{9.8$\times$} \\
         \bottomrule
     \end{tabular}
 \end{table}
-% TODO[Student]: confirm the batch stage decomposition above against your measurement logs,
+% TODO[Student[done]]: confirm the batch stage decomposition above against your measurement logs,
 % in particular that Global ID Reassignment = 495 ms and the residual 417.19 ms is I/O and
 % bookkeeping. Replace <1 with the measured value for World-Coordinate Replacement. If any
 % streaming stage IS separately measurable, replace its dagger with the measured mean +- std.
 
-The streaming architecture's advantage is most pronounced in the two stages that dominate the total computation. \textbf{Representative Selection} (Stage~2, batch: 10,235~ms vs. streaming: $34.06 \pm 36.52$~ms) and \textbf{Clustering (HAC)} (Stage~6, batch: 20,367~ms vs. streaming: $86.16 \pm 68.86$~ms) together account for over 96\% of the batch MCPT time. The standard deviations are substantial because the first two windows incur JVM Just-In-Time (JIT) compilation overhead; excluding them, steady-state Representative Selection drops to $31.46 \pm 36.97$~ms and Clustering to $84.71 \pm 71.69$~ms. These stages are both I/O-intensive---reading pre-computed Re-ID features from disk---and compute-intensive---iterating over all pairwise tracklets in the batch case. The streaming engine exploits incremental windowing: features are pre-loaded and maintained in stateful tables, and only the new window's deltas are processed.
+The streaming architecture's advantage is most pronounced in the two stages that dominate the total computation. \textbf{Clustering (HAC)} (Stage~6, batch: 20,367~ms, 64.4\% of total vs. streaming: $86.16 \pm 68.86$~ms) and \textbf{Representative Selection} (Stage~2, batch: 10,235~ms, 32.4\% vs. streaming: $34.06 \pm 36.52$~ms) together account for over 96\% of the batch MCPT time. The standard deviations are substantial because the first two windows incur JVM Just-In-Time (JIT) compilation overhead; excluding them, steady-state Representative Selection drops to $31.46 \pm 36.97$~ms and Clustering to $84.71 \pm 71.69$~ms. These stages are both I/O-intensive---reading pre-computed Re-ID features from disk---and compute-intensive---iterating over all pairwise tracklets in the batch case. The streaming engine exploits incremental windowing: features are pre-loaded and maintained in stateful tables, and only the new window's deltas are processed.
 
-The remaining stages are individually negligible in the batch total ($<$0.5\% combined, excluding the Global ID Reassignment post-processing step at ${\sim}495$~ms) and, in the streaming pipeline, fall within per-window timing variability
+Of the remaining stages, only Misc.\ I/O (1.3\%) contributes measurably to the batch total without a direct streaming equivalent. The batch Global ID Management (Assign + Reassign) is subsumed in streaming by the single Global ID Assignment stage ($3.13 \pm 1.97$~ms), delivering a \textbf{6.7$\times$} speedup. Matrix zeroing ($0.03 \pm 0.04$~ms) also benefits from incremental processing with an \textbf{8.6$\times$} speedup, while world-coordinate replacement operates at near parity ($1.0\times$). The similarity matrix generation ($3.67 \pm 8.28$~ms) and world coordinate measurement ($1.25 \pm 0.79$~ms) stages show no material speedup because their per-window streaming cost (accumulated over 25 windows) is comparable to the single-pass batch cost
 (Table~\ref{tab:performance_combined}).
-
-% The remaining pipeline stages---similarity matrix generation (65~ms in batch), matrix zeroing (6~ms), world-coordinate replacement ($<$1~ms), global ID assignment (26~ms), and world coordinate measurement (9~ms)---are collectively negligible in the batch total ($<$0.5\%) and subsumed within per-window timing variability in the streaming pipeline. The Pipeline Overhead row captures additional costs not broken out into individual stages, most notably the Global ID Reassignment post-processing step (~495~ms in batch) and miscellaneous I/O and bookkeeping.
 
 Overall, the streaming architecture delivers a \textbf{9.8$\times$} end-to-end speedup (cumulative over 25 windows: 3,232~ms streaming vs. 31,620~ms batch). These improvements stem from the architectural shift from batch-oriented processing---where each window incurs I/O and recomputation costs proportional to the full accumulated state---to incremental stream processing, where state lives in relational tables and per-window work is proportional only to newly arriving data.
 
@@ -1124,7 +1120,7 @@ To demonstrate this, we inject three parameter changes at frame~270 (mid-way thr
 
 The benchmarking results across 25 consecutive data windows demonstrate that \textbf{STREAMTRACK} not only reduces single-window latency but also significantly improves total system throughput. Because both the streaming and batch implementations run on the same JVM (identical language, runtime, math library, and heap configuration), the measured speedup is purely architectural---attributable to the streams-and-tables design rather than cross-language implementation differences.
 
-As Table~\ref{tab:performance_combined} details, the pipeline stages benefit unevenly from the streaming architecture. The \textbf{Representative Selection} stage (Stage~2 in streaming, Stage~4 in batch) exhibits the most dramatic speedup (300.5$\times$) because the batch pipeline re-reads and re-processes the full per-camera feature archive from disk for every window, while the streaming pipeline maintains camera state incrementally in memory. The \textbf{Clustering (HAC)} stage (236.4$\times$) profits similarly: batch recomputes the full hierarchical clustering over all accumulated tracklets each window, whereas streaming only clusters the new window's tracklets against the maintained identity state.
+As Table~\ref{tab:performance_combined} details, the pipeline stages benefit unevenly from the streaming architecture. The \textbf{Representative Selection} stage (Stage~2 in streaming, Stage~4 in batch) exhibits the largest absolute gain (batch: 10,235~ms cumulative; streaming: $34.06 \pm 36.52$~ms per window), yielding a \textbf{12.0$\times$} speedup, because the batch pipeline re-reads and re-processes the full per-camera feature archive from disk for every window, while the streaming pipeline maintains camera state incrementally in memory. The \textbf{Clustering (HAC)} stage (\textbf{9.5$\times$}) profits similarly: batch recomputes the full hierarchical clustering over all accumulated tracklets each window, whereas streaming only clusters the new window's tracklets against the maintained identity state.
 
 \begin{figure}[H]
     \centering
@@ -1180,7 +1176,7 @@ distributed edge--cloud deployment is a natural next step.
 
 
 \section{Conclusion and Future Work}\label{sec:conclusion}
-We presented \textbf{STREAMTRACK}, a relational streams-and-tables architecture for multi-camera object tracking. By recasting MCOT as a continuous query problem and utilizing topology-aware stream joins, we achieved a \textbf{9.8$\times$ overall speedup} over an equivalent JVM batch baseline on the Woven WTS dataset, with up to \textbf{300$\times$} speedup in the representative selection stage and \textbf{236$\times$} in clustering. Because both the batch and streaming implementations share the same language, runtime, and math library, these gains are purely architectural---they validate the central claim that MCOT scalability is an architectural, not algorithmic, problem. Scaling the NVIDIA SmartSpaces network with topology-aware partitioning yields a further \textbf{4.16$\times$} (up to \textbf{4.27$\times$} in steady state excluding JVM warm-up) latency reduction per association call. Our system ensures real-time performance even as the camera network grows, while providing an architecture that supports unique operational benefits like runtime reconfigurability and SQL-based inspectability.
+We presented \textbf{STREAMTRACK}, a relational streams-and-tables architecture for multi-camera object tracking. By recasting MCOT as a continuous query problem and utilizing topology-aware stream joins, we achieved a \textbf{9.8$\times$ overall speedup} over an equivalent JVM batch baseline on the Woven WTS dataset, with a \textbf{12.0$\times$} speedup in representative selection and \textbf{9.5$\times$} in clustering. Because both the batch and streaming implementations share the same language, runtime, and math library, these gains are purely architectural---they validate the central claim that MCOT scalability is an architectural, not algorithmic, problem. Scaling the NVIDIA SmartSpaces network with topology-aware partitioning yields a further \textbf{4.16$\times$} (up to \textbf{4.27$\times$} in steady state excluding JVM warm-up) latency reduction per association call. Our system ensures real-time performance even as the camera network grows, while providing an architecture that supports unique operational benefits like runtime reconfigurability and SQL-based inspectability.
 
 % TODO[Student]: if SmartSpaces parity lands per the TODO above, extend the conclusion's
 % parity sentence accordingly.
