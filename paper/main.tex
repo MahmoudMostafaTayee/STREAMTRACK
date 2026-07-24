@@ -334,11 +334,19 @@ The architecture is organised as a pipeline of continuous operators over detecti
 \node[ctrlblock, above=1.0cm of topology] (reconfig) {Reactive Reconfiguration Loop\\ \scriptsize (Connected Components; EPL deploy/undeploy)};
 % control event streams entering from the left
 \draw[ctrl] ($ (configtable.north west) + (-1.2,0.4) $) -- node[above, font=\scriptsize, sloped] {MCPTConfig events} (configtable.north west);
-\draw[ctrl] ($ (reconfig.west) + (-1.6,0) $) -- node[above, font=\scriptsize] {CameraTopology events} (reconfig.west);
+% CameraTopology events: split to two parallel targets
+\draw[ctrl] ($ (reconfig.west) + (-2.5,0) $) -- node[above, font=\scriptsize] {CameraTopology events} ($ (reconfig.west) + (-1.0,0) $);
+\draw[ctrl] ($ (reconfig.west) + (-1.0,0) $) -- (reconfig.west);
+\draw[ctrl] ($ (reconfig.west) + (-1.0,0) $) |- (topology.west);
 % control wiring
-\draw[ctrl, <->] (reconfig) -- node[right, font=\scriptsize, align=left] {upsert /\\watch} (topology);
-\draw[ctrl] (topology) -- node[right, font=\scriptsize, align=left] {deploy /\\undeploy} (join);
-\draw[ctrl] (configtable.south) .. controls +(0,-0.6) and +(-1.2,0.8) .. node[below, font=\scriptsize, sloped, pos=0.6] {reads params} (mcpt.north west);
+\path (reconfig.east) ++(0.5,0) coordinate (rjoin);
+\draw[ctrl] (reconfig.east) -- (rjoin) |- (join.east);
+\path (rjoin) ++(0.1,-0.2) node[right, font=\scriptsize] {deploy / undeploy};
+% table read by aggregation queries
+\path (topology.south) ++(0,-0.45) coordinate (tjoin);
+\draw[ctrl] (topology.south) -- (tjoin) -| (join.north);
+\path (tjoin) ++(0.15,0) node[right, font=\scriptsize] {queryable state};
+\draw[ctrl] (configtable.south) .. controls +(0,-0.6) and +(-1.2,0.8) .. node[below, font=\scriptsize, sloped, pos=0.6] {param. updates via listener} (mcpt.north west);
 % ---------------- Data-plane arrows ----------------
 \draw[stream] ($ (ingest.west) - (1cm,0) $) -- node[above] {\scriptsize Detections} (ingest.west);
 \draw[arrow] (ingest) -- node[above] {\scriptsize stream} (scpt);
@@ -362,10 +370,11 @@ per-camera streams, single-camera tracking is a stateful windowed operator, and 
 association aggregates results before global appearance clustering, with the
 \texttt{CalibrationTable} and \texttt{GlobalIDTable} as relational state. The \emph{control
 plane} (top, violet) carries the operational contribution: \texttt{CameraTopology} and
-\texttt{MCPTConfig} events upsert into control tables, and a reactive reconfiguration loop
-watches the \texttt{CameraTopologyTable}, recomputes connected components, and deploys or
-undeploys association queries at runtime---so both the network topology and the algorithmic
-parameters are reconfigurable as data, with zero downtime.}
+\texttt{MCPTConfig} events upsert into control tables (which serve as queryable state for the
+operators below), and a reactive reconfiguration loop watches the \texttt{CameraTopology}
+event stream, recomputes connected components, and deploys or undeploys association queries
+at runtime---so both the network topology and the algorithmic parameters are reconfigurable as
+data, with zero downtime.}
 \label{fig:architecture}
 \end{figure*}
  
@@ -381,21 +390,42 @@ reference pipeline (Section~\ref{sec:background:baseline}) stage for stage; this
 functional parity with the state-of-the-art baseline achievable by construction
 (Section~\ref{sec:eval:parity}). The \emph{control plane} is where the architectural gains
 live: \texttt{CameraTopology} and \texttt{MCPTConfig} events are themselves streams that
-upsert into control tables, and a reactive reconfiguration loop watches the topology relation,
-recomputes the connected components of the neighbourhood graph, and redeploys the affected
-association queries at runtime. Operational concerns---which cameras are grouped, which
-thresholds apply, when queries are rebuilt---are thus expressed in the same streams-and-tables
-vocabulary as the tracking itself, rather than in configuration files or code. The data plane
+upsert into control tables, and a reactive reconfiguration loop watches the
+\texttt{CameraTopology} event stream directly, recomputes the connected components of the
+neighbourhood graph, and redeploys the affected association queries at runtime. Operational
+concerns---which cameras are grouped, which thresholds apply, when queries are rebuilt---are
+thus expressed in the same streams-and-tables vocabulary as the tracking itself, rather than
+in configuration files or code. The data plane
 answers \emph{what the baseline computes}; the control plane answers \emph{how the deployment
 adapts}, and it is the latter that delivers the scalability, inspectability, and
 reconfigurability properties claimed in Section~\ref{sec:background:mcot}.
-% TODO[Student]: verify the control-plane wiring against the implementation:
+% TODO[Student[done]]: verify the control-plane wiring against the implementation:
 % (1) Do CameraTopology events flow through the reconfiguration loop into the table (as drawn),
 %     or directly into the table with the loop as a listener? Adjust the arrow direction if needed.
 % (2) Confirm MCPTConfig updates are applied via a listener on MCPTConfigTable and read by the
 %     MCPT kernel per invocation, as stated in the runtime-parameter paragraph of the evaluation.
 % (3) Provide the actual EPL for the MCPTConfigTable upsert (mirroring the CameraTopologyTable
 %     on-merge statement) for Section 5 or an appendix.
+% (1) CameraTopology events flow in PARALLEL: the on-merge upsert goes directly into
+%     CameraTopologyTable (IotMain.prepareTopologyQueries), while a separate `select * from
+%     CameraTopology` listener (IotMain.multiCameraAggregationQueries) triggers the reactive
+%     reconfiguration loop (topologyGraph update -> computeClusters -> deploy/undeploy
+%     aggregation EPL). The loop does NOT interact with CameraTopologyTable; the figure now
+%     reflects this with a split entry path.
+% (2) MCPTConfig updates are applied via a `select * from MCPTConfig` listener that calls
+%     applyRuntimeParameter(), which reflectively updates TrackingParameters statics. The MCPT
+%     kernel reads these statics per invocation (passed as method args from
+%     processAggregatedResults). There is no listener on MCPTConfigTable itself; the table
+%     serves as a queryable side-effect of the on-merge upsert.
+% (3) The MCPTConfigTable upsert EPL mirrors the CameraTopologyTable pattern:
+%       on MCPTConfig as cfg
+%       merge into MCPTConfigTable as target
+%       where target.paramName = cfg.paramName
+%       when matched then
+%         update set target.paramValue = cfg.paramValue, target.paramType = cfg.paramType
+%       when not matched then
+%         insert select cfg.paramName as paramName, cfg.paramValue as paramValue, cfg.paramType as paramType;
+%     See IotMain.prepareConfigQueries().
 
 \subsection{Operator Model}
 \label{sec:overview:operatormodel}
@@ -496,7 +526,7 @@ Implementing MCOT via SQL/EPL on an embeddable complex-event-processing engine s
     \item \textbf{Embeddable JVM-local runtime.} Esper is a lightweight library running inside the application process, enabling zero-copy sharing of appearance tensors between tracking operators and relational state in memory, without any inter-process serialisation overhead.
     \item \textbf{Relational state-table semantics.} Esper provides first-class relational tables with primary keys, indexes, and continuous transactional merges (EPL \texttt{MERGE}). This lets us model the active camera neighbourhood and global identity mappings as queryable relations that can be inspected at runtime.
     \item \textbf{Deterministic memory and tensor management.} Esper allows priority-annotated temporal queries (e.g., \texttt{TrackExpiredEvent}) that evict stale \texttt{GlobalIDTable} rows and trigger immediate JVM garbage collection of heavy vision tensors after a configurable inactivity window.
-    \item \textbf{Zero-downtime topology reconfiguration.} Esper compiles, deploys, and undeploys EPL statements at runtime, so our reactive loop installs updated topological joins on-the-fly when the \texttt{CameraTopologyTable} changes, without interrupting tracking.
+    \item \textbf{Zero-downtime topology reconfiguration.} Esper compiles, deploys, and undeploys EPL statements at runtime, so our reactive loop installs updated topological joins on-the-fly when \texttt{CameraTopology} events arrive, without interrupting tracking.
 \end{itemize}
 Unlike database-oriented video query systems (e.g., MOQL~\cite{li1997moql}, BilVideo~\cite{donderler2005bilvideo}, SVQL~\cite{lu2015svql}), built for static repositories, and pure pattern-matching CEP systems (e.g., Snoop~\cite{chakravarthy1994snoop}, SASE~\cite{wu2006sase}, TESLA~\cite{cugola2010tesla}), which lack mutable indexed state, Esper uniquely unites stream windowing/joins with queryable relational tables in one engine.
 
@@ -591,7 +621,7 @@ having count(*) = 2;
 \end{verbatim}
 
 A subtlety of this design deserves emphasis. The deployed query above contains no runtime join against the \texttt{CameraTopologyTable}; its neighbour set appears as a compiled \texttt{IN(\dots)} predicate. This is deliberate: the stream--table join is evaluated at \emph{plan time} rather than per tuple. Whenever the topology changes, the reactive
-reconfiguration loop (Section~\ref{sec:multi:topology}) joins the current \texttt{CameraTopologyTable} against the set of active aggregation queries, computes the connected components of the neighbourhood graph, and rewrites and redeploys the affected
+reconfiguration loop (Section~\ref{sec:multi:topology}) reads the current neighbourhood graph, computes the connected components, and rewrites and redeploys the affected
 queries with their neighbour sets baked in as membership predicates. The join result is thus materialised into the query plan once per topology change, instead of being re-evaluated for
 every arriving \texttt{SingleCameraResult} event. This is the streaming analogue of partition pruning and predicate pushdown in relational query optimisation: because camera topology
 changes orders of magnitude less frequently than detections arrive, folding the join into the plan eliminates a per-tuple table probe on the hot path while preserving the relational
@@ -970,7 +1000,7 @@ In steady state, the average latency is reduced to $9.15 \pm 8.27$\todo{Is this 
 
 \subsection{Runtime Topology Reconfiguration (RQ3)}
 
-A distinctive operational advantage of \textbf{STREAMTRACK} is its ability to reconfigure the camera network topology at runtime---without any pipeline downtime, restart, or loss of tracking state. Because camera neighbourhoods are maintained as a relational \texttt{CameraTopologyTable} rather than hardcoded logic, operators can add, remove, or reassign camera links by simply injecting \texttt{CameraTopology} events into the live stream. The system's reactive reconciliation loop (\texttt{reconcileDeployments()}) automatically detects the change, recomputes the Connected Components of the updated neighbourhood graph, and atomically reconciles the deployed EPL aggregation queries. The end-to-end reconfiguration time reported in this section encompasses all three operations: (i) recomputing the Connected Components of the \texttt{CameraTopologyTable}, (ii) undeploying EPL statements for camera groups that are no longer present in the topology, and (iii) deploying new EPL statements for the newly formed groups.
+A distinctive operational advantage of \textbf{STREAMTRACK} is its ability to reconfigure the camera network topology at runtime---without any pipeline downtime, restart, or loss of tracking state. Because camera neighbourhoods are maintained as a relational \texttt{CameraTopologyTable} rather than hardcoded logic, operators can add, remove, or reassign camera links by simply injecting \texttt{CameraTopology} events into the live stream. The system's reactive reconciliation loop (\texttt{reconcileDeployments()}), triggered by a listener on the \texttt{CameraTopology} event stream, automatically recomputes the Connected Components of the updated neighbourhood graph, and atomically reconciles the deployed EPL aggregation queries. The end-to-end reconfiguration time reported in this section encompasses all three operations: (i) recomputing the Connected Components of the neighbourhood graph, (ii) undeploying EPL statements for camera groups that are no longer present in the topology, and (iii) deploying new EPL statements for the newly formed groups.
 
 \paragraph{Key Features of Runtime Reconfiguration.}
 \begin{itemize}[leftmargin=*]
