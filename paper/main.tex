@@ -630,24 +630,47 @@ Naive cross-camera association compares tracklets across all camera pairs. For $
 \subsection{Topology-Aware Candidate Generation}
 \label{sec:multi:assoc}
 
-We formulate cross-camera association as a topology-parameterised stream-aggregation query synchronised by a \texttt{windowIndex} (an S2R\,$\to$\,R2S operator). The pipeline dynamically builds an \texttt{IN(\dots)} clause for the explicitly linked cameras in a topological cluster. By restricting comparisons and aggregations to localised camera groups, the candidate count drops sharply, confirmed by our 9-camera benchmark, where topology-aware partitioning yields a \textbf{4.16$\times$} reduction in per-call latency (up to \textbf{4.27$\times$} in steady state excluding JVM warm-up) relative to global matching (Section~\ref{sec:evaluation}). The localised aggregation is expressed as a time-windowed query whose membership predicate is the topological neighbour set:
-%TODO[Student]: This query below shows no joins at all. Is it really used for global ID tracking? Or, are there other statements? Also, where does the knowledge of the cameras 001 and 002, for example, come from? Do they come from the topology table?
+We formulate cross-camera association as a topology-parameterised stream-aggregation query synchronised by a \texttt{windowIndex} (an S2R\,$\to$\,R2S operator). By restricting comparisons and aggregations to localised camera groups, the candidate count drops sharply, confirmed by our 9-camera benchmark, where topology-aware partitioning yields a \textbf{4.16$\times$} reduction in per-call latency (up to \textbf{4.27$\times$} in steady state excluding JVM warm-up) relative to global matching (Section~\ref{sec:evaluation}).
+%TODO[Student[done]]: This query below shows no joins at all. Is it really used for global ID tracking? Or, are there other statements? Also, where does the knowledge of the cameras 001 and 002, for example, come from? Do they come from the topology table?
+Note that the query below contains \emph{no explicit join keyword}---it uses a filter predicate (\texttt{cameraId in (\dots)}) rather than a stream--table join against \texttt{CameraTopologyTable}. This is deliberate. In CQL terms the operator \emph{is} a join: it associates the detection stream with the topology relation to group cameras into synchronised clusters. The physical execution strategy, however, evaluates this join at \emph{plan time} rather than per tuple. The neighbour set is resolved once from the topology table, compiled directly into an \texttt{IN(\dots)} predicate, and baked into the deployed EPL. This is the streaming analogue of partition pruning and constant-expression folding in relational optimisers: because topology changes orders of magnitude less frequently than detections arrive, materialising the join result into the query plan eliminates a per-tuple table probe on the hot path while preserving the relational semantics. The topology relation remains the single source of truth (every deployed predicate is derivable from it), and a topology update becomes a plan change rather than a code change.
 \begin{verbatim}
--- Emits CrossCamCandidates stream (Aggregation Group)
+-- Deployed synchronised cross-camera aggregation
+-- (one such query per connected component of the topology graph;
+--  the IN(...) list is compiled from CameraTopologyTable at plan time)
 select window( * ) as results
 from SingleCameraResult(cameraId in
     ('camera_0001', 'camera_0002')).win:time(2 min)
 group by windowIndex
 having count(*) = 2;
 \end{verbatim}
+The aggregation query is the first half of the identity-tracking path. Once its listener dispatches grouped tracklets to the MCPT kernel, the resulting \texttt{GlobalPersonEvent}s are written into the \texttt{GlobalIDTable} via a separate on-merge statement (Section~\ref{sec:multi:globalid}), and stale entries are evicted by a priority-ordered timer query---these are the actual identity-maintenance statements.
 
-A subtlety of this design deserves emphasis. The deployed query above contains no runtime join against the \texttt{CameraTopologyTable}; its neighbour set appears as a compiled \texttt{IN(\dots)} predicate. This is deliberate: the stream--table join is evaluated at \emph{plan time} rather than per tuple. Whenever the topology changes, the reactive
-reconfiguration loop (Section~\ref{sec:multi:topology}) reads the current neighbourhood graph, computes the connected components, and rewrites and redeploys the affected
-queries with their neighbour sets baked in as membership predicates. The join result is thus materialised into the query plan once per topology change, instead of being re-evaluated for
-every arriving \texttt{SingleCameraResult} event. This is the streaming analogue of partition pruning and predicate pushdown in relational query optimisation: because camera topology
-changes orders of magnitude less frequently than detections arrive, folding the join into the plan eliminates a per-tuple table probe on the hot path while preserving the relational
-semantics; the topology relation remains the single source of truth, and every deployed predicate is derivable from it. The same mechanism is what makes reconfiguration zero-downtime:
-a topology update is a plan change, not a code change.
+The mechanism that populates the \texttt{IN(\dots)} at plan time is itself expressed in EPL. The topology is stored as a relational table and updated atomically as \texttt{CameraTopology} events arrive:
+\begin{verbatim}
+-- Define topology state table (composite primary key for adjacency)
+create table CameraTopologyTable (
+    cameraId string, neighborId string, enabled boolean, overlapping boolean,
+    primary key(cameraId, neighborId)
+);
+
+-- Atomic upsert from incoming CameraTopology events
+on CameraTopology as ct
+merge into CameraTopologyTable as target
+where target.cameraId = ct.cameraId and target.neighborId = ct.neighborId
+when matched then
+  update set target.enabled = ct.enabled, target.overlapping = ct.overlapping
+when not matched then
+  insert select ct.cameraId, ct.neighborId, ct.enabled, ct.overlapping;
+\end{verbatim}
+A second parallel listener subscribes to the same event stream to detect changes and trigger redeployment---the control-plane half that converts a topology change into a plan change:
+\begin{verbatim}
+-- Reactive trigger: any CameraTopology event recompiles
+-- the affected aggregation queries with updated IN(...) lists.
+select * from CameraTopology;
+\end{verbatim}
+Both statements consume every \texttt{CameraTopology} event in parallel: the on-merge persists the state into the table, while the listener fires \texttt{reconcileDeployments()}, which recomputes the connected components of the graph, diffs them against the currently active deployment set, and for each new or changed component calls \texttt{deployAggregationQuery()}---the method that iterates the camera set, builds the \texttt{IN(\dots)} string, and compiles a fresh EPL statement at runtime. This is the split-entry design visible in Figure~\ref{fig:architecture} (the violet control plane): one event stream, two parallel EPL consumers---one for state, one for reaction.
+
+Because the join result is materialised into the query plan once per topology change rather than re-evaluated for every arriving \texttt{SingleCameraResult} event, a topology update is a plan change, not a code change---the essence of zero-downtime reconfiguration (Section~\ref{sec:multi:topology}).
 
 % TODO(consistency)[Done]: the win:time(2 min) here is the synchronisation window; reconcile with the
 % "3-second synchronization window" referenced near the reconfiguration result in the evaluation.
@@ -683,6 +706,14 @@ when not matched then
 \end{verbatim}
 
 Critically, the \texttt{CameraTopologyTable} is not merely a static configuration store. The system implements a \emph{reactive reconfiguration loop}: each incoming \texttt{CameraTopology} event triggers a Connected Components computation over the in-memory neighbourhood graph. When the resulting cluster partition differs from the currently active set of aggregation queries, the system automatically compiles and deploys new EPL statements targeting the updated camera groups, while undeploying the obsolete ones. This enables zero-downtime reconfiguration of the camera network; an operator can add, remove, or reassign camera neighbourhoods at runtime without restarting the pipeline or manually editing query definitions.
+
+The reconfiguration loop itself is driven by a second EPL statement---the \emph{control-plane} counterpart to the table-upsert above. While the on-merge persists topology state, this listener detects \emph{changes} and triggers redeployment:
+\begin{verbatim}
+-- Reactive reconfiguration trigger: any topology change
+-- redeploys the aggregation queries with updated IN(...) lists.
+select * from CameraTopology;
+\end{verbatim}
+Note that this listener subscribes to the \texttt{CameraTopology} \emph{event stream}, not the table---it fires on every topology change, whereas the table upsert is a side effect. Both statements consume the same incoming event in parallel: one persists the state, the other recompiles the query plan. This is the split-entry design visible in Figure~\ref{fig:architecture} (the violet control plane). The listener's Java-side handler calls \texttt{reconcileDeployments()} which computes connected components, diffs them against the set of currently deployed aggregation queries, and for each new or changed connected component calls \texttt{deployAggregationQuery()}---the method that constructs the \texttt{IN(\dots)} clause by iterating the camera set and compiling a fresh EPL string at runtime.
 
 %STOPPED HERE: 20/07/2026
 \subsection{Handling Non-Overlapping Cameras via Transitional Gating}
