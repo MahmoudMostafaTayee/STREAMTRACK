@@ -1,0 +1,339 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+% IEEEtran standard template packages
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{url}
+\usepackage{enumitem}
+\usepackage{microtype}
+\usepackage{tikz}
+\usetikzlibrary{shapes.geometric, shapes.symbols, arrows.meta, positioning, fit, backgrounds, calc}
+
+% Compact list and float spacing for strict 4-page target
+\setlist[enumerate]{leftmargin=*,itemsep=0.5pt,topsep=1.5pt,parsep=0pt}
+\setlist[itemize]{leftmargin=*,itemsep=0.5pt,topsep=1.5pt,parsep=0pt}
+\setlength{\textfloatsep}{4pt plus 1pt minus 1pt}
+\setlength{\floatsep}{4pt plus 1pt minus 1pt}
+\setlength{\intextsep}{4pt plus 1pt minus 1pt}
+\setlength{\abovecaptionskip}{2pt}
+\setlength{\belowcaptionskip}{2pt}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{STREAMTRACK: A Streams-and-Tables Architecture for Scalable Multi-Camera Object Tracking}
+
+% =========================================================================
+% AUTHOR BLOCK (ANONYMIZED FOR INITIAL DOUBLE-BLIND REVIEW PER NILES GUIDELINES)
+% To activate full camera-ready author details, uncomment the section below.
+% =========================================================================
+\author{\IEEEauthorblockN{Anonymous Author(s)}
+\IEEEauthorblockA{\textit{Affiliation Omitted for Double-Blind Review} \\
+\textit{NILES 2026 Submission}}
+}
+
+%\author{
+%\IEEEauthorblockN{Mahmoud Tayee}
+%\IEEEauthorblockA{\textit{Faculty of Engineering and Applied Sciences} \\
+%\textit{Nile University}, Giza, Egypt \\
+%m.mostafa2118@nu.edu.eg}
+%\and
+%\IEEEauthorblockN{Ahmed Awad}
+%\IEEEauthorblockA{\textit{Faculty of Computers and AI, Cairo University}, Egypt \\
+%\textit{The British University in Dubai}, Dubai, UAE \\
+%a.gaafar@fci-cu.edu.eg}
+%}
+
+\maketitle
+
+\begin{abstract}
+Multi-camera object tracking (MCOT) systems are traditionally constructed as monolithic computer-vision pipelines. This design causes combinatorial candidate explosions across non-adjacent cameras, buries identity state in program variables, and requires hard system restarts when camera network topology changes. We argue these limitations are architectural rather than algorithmic, and present \textbf{STREAMTRACK}: a relational \emph{streams-and-tables} architecture for MCOT realized on an embeddable Complex Event Processing (CEP) engine. Detections flow as append-only streams, global identities and camera topology are maintained as queryable relational tables, and cross-camera association is expressed as continuous topology-aware stream joins. Evaluated on the Woven WTS and 9-camera NVIDIA SmartSpaces datasets, \textbf{STREAMTRACK} preserves exact functional parity with state-of-the-art batch baselines while delivering a \textbf{9.8$\times$} overall speedup (\textbf{12.0$\times$} in representative selection, \textbf{9.5$\times$} in clustering). Topology-aware join partitioning yields a \textbf{4.16$\times$} latency reduction at nine cameras, while live topology events enable zero-downtime reconfiguration with sub-second recovery (190--337~ms) and 100\% state preservation.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Stream Processing, Complex Event Processing, Multi-Camera Object Tracking, Streams and Tables, Reconfigurable Systems, Edge Computing.
+\end{IEEEkeywords}
+
+% -------------------------------------------------------------------------
+\section{Introduction}
+\label{sec:intro}
+Multi-camera object tracking (MCOT) underpins critical smart city applications, including urban traffic monitoring, intelligent space surveillance, and public safety analytics~\cite{yoshida2024overlap,kim2024cluster,xie2024robust}. The core task is to assign a unique, continuous global identity ($ID_G$) to each physical object as it traverses a network of cameras $\mathcal{C} = \{c_1,\dots,c_m\}$. While single-camera tracking (SCT) within a single field of view (FoV) is well handled by frame-to-frame trackers~\cite{yoshida2024overlap}, cross-camera association---matching tracklets across distinct cameras despite lighting changes, viewpoint shifts, occlusions, and non-overlapping spatial gaps---dominates system computational cost and dictates operational scalability.
+
+\subsection{Problem Statement and Systems Bottlenecks}
+The computer vision community traditionally treats multi-camera tracking scalability as an \emph{algorithmic} challenge (designing tighter Re-ID embeddings or heavier graph clustering heuristics). However, deploying MCOT in real-world environments raises three fundamental \emph{systems-level} architectural bottlenecks that academic vision benchmarks largely treat as implementation details:
+\begin{enumerate}
+    \item \textbf{Combinatorial Candidate Explosion:} Naive cross-camera association evaluates candidate matches across all camera pairs. For $m$ cameras, the comparison search space scales as $\binom{m}{2} = O(m^2)$. Real-world networks are spatially sparse; most camera pairs never observe the same physical person simultaneously, yet monolithic pipelines re-evaluate distant pairs indiscriminately.
+    \item \textbf{Opaque, Uninspectable State:} Global identity assignments depend on a continuously evolving identity state (tracklet-to-global ID mappings, spatial-temporal last-seen coordinates). In monolithic pipelines, this state is buried in imperative program variables, making it impossible to query, inspect, or audit \emph{why} a given assignment was made.
+    \item \textbf{Brittle, Static Topology:} Camera networks undergo frequent physical changes: cameras are added, removed, or re-linked as spatial configurations evolve. When network topology is hardcoded into pipeline logic, any reconfiguration requires editing code and restarting the execution pipeline, destroying accumulated tracking state.
+\end{enumerate}
+
+\subsection{Proposed Paradigm: Streams and Tables}
+We argue these operational vulnerabilities stem from \emph{monolithic software architecture} rather than vision-algorithm constraints. Drawing on the \emph{stream--table duality}~\cite{sax2018streams}, we propose \textbf{STREAMTRACK}: a continuous stream-processing architecture for MCOT. Detections and tracklet updates arrive as append-only event \emph{streams}; global identities and camera topology are maintained as mutable, queryable relational \emph{tables}; and cross-camera association is formulated as continuous spatial joins over live topology relations.
+
+Realized on an embeddable CEP engine running in a single process, high-dimensional appearance feature tensors are shared zero-copy in memory, isolating architectural speedups from runtime and language overheads.
+
+\textbf{Contributions:} (1) A streams-and-tables re-architecting of MCOT as an operator graph over detection streams and relational state tables; (2) Topology-aware candidate pruning reducing evaluations from $\binom{9}{2}=36$ to $6$ pairs, achieving a \textbf{4.16$\times$} latency reduction; (3) Stage-by-stage verification across five pipeline stages against a JVM batch baseline on Woven WTS, confirming 100\% Global ID parity alongside a \textbf{9.8$\times$} overall speedup; and (4) Event-driven control plane enabling zero-downtime topology reconfiguration with sub-second recovery (190--337~ms) and total state preservation.
+
+% -------------------------------------------------------------------------
+\section{Background and Related Work}
+\label{sec:background}
+
+\subsection{Multi-Camera People Tracking Baselines}
+High-performing MCOT solutions catalysed by the AI City Challenge~\cite{yoshida2024overlap,kim2024cluster,xie2024robust,specker2024ocmctrack,yang2024online} focus predominantly on computer-vision heuristics. Yoshida et al.~\cite{yoshida2024overlap} proposed Overlap Suppression Clustering (OSC) for offline batch tracking, utilizing degree centrality to resolve overlap anomalies and average-linkage hierarchical clustering (HAC) over pose keypoint confidence levels. Online entries like Kim et al.~\cite{kim2024cluster} (Cluster Self-Refinement) and Xie et al.~\cite{xie2024robust} employ periodic batch clustering windows or geometric projection constraints. However, these systems treat tracking execution as a monolithic pipeline, relying on periodic offline or semi-batch passes to rectify accumulated errors.
+
+Industrial platforms like NVIDIA DeepStream~\cite{nvidia2024deepstream} and Metropolis~\cite{nvidia2025metropolis} provide containerized microservice execution. However, association logic remains embedded inside closed-source compiled modules; state is not natively queryable via SQL, and topology updates require manual service redeployments.
+
+\subsection{Stream--Table Duality and CEP Engine Selection}
+Continuous Query Language (CQL) models~\cite{sax2018streams} unify streaming and relational data across four operator families:
+\begin{itemize}
+    \item \textbf{Stream-to-Relation (S2R):} Temporal sliding window operators (\texttt{win:time}) capturing stream subsets into temporary relations.
+    \item \textbf{Relation-to-Relation (R2R):} Standard relational SQL queries over materialised state tables.
+    \item \textbf{Stream/Relation-to-Relation (S/R2R):} Stream updates that mutate persistent relational tables (upserts).
+    \item \textbf{Relation-to-Stream (R2S):} Timer-driven or event-triggered evictions emitting derived event streams.
+\end{itemize}
+
+While distributed engines (e.g., Apache Flink, Kafka Streams) excel at data-parallel key-value tasks, transferring high-dimensional appearance vectors across network sockets incurs severe RPC serialisation overhead. We select Esper~\cite{espertech2024}, a mature CEP engine providing full CQL semantics in an embeddable, single-process JVM runtime. This enables zero-copy sharing of feature vectors between vision kernels and relational state tables.
+
+% -------------------------------------------------------------------------
+\section{STREAMTRACK System Architecture}
+\label{sec:architecture}
+
+\textbf{STREAMTRACK} decomposes MCOT execution into two decoupled planes: a \emph{Data Plane} executing continuous tracking operators and a \emph{Control Plane} managing live configuration relations, as illustrated in Fig.~\ref{fig:architecture}.
+
+\begin{figure}[t!]
+\centering
+\resizebox{\linewidth}{!}{
+\begin{tikzpicture}[
+    node distance=1.2cm and 1.5cm,
+    font=\small\sffamily,
+    block/.style={rectangle, draw=black!70, fill=blue!10, rounded corners=2pt, minimum height=3em, text width=2.6cm, align=center, thick},
+    ctrlblock/.style={rectangle, draw=violet!70, fill=violet!8, rounded corners=2pt, minimum height=3em, text width=3.0cm, align=center, thick},
+    table/.style={cylinder, shape border rotate=90, aspect=0.25, draw=black!70, fill=gray!15, text width=2.4cm, align=center, minimum height=3.5em, thick},
+    ctrltable/.style={cylinder, shape border rotate=90, aspect=0.25, draw=violet!70, fill=violet!8, text width=2.4cm, align=center, minimum height=3.5em, thick},
+    arrow/.style={-{Stealth[scale=1.2]}, thick, draw=black!70},
+    stream/.style={-{Stealth[scale=1.2]}, thick, draw=orange!80!black, dashed},
+    staterw/.style={-{Stealth[scale=1.2]}, thick, draw=blue!60, dashed},
+    ctrl/.style={-{Stealth[scale=1.2]}, thick, draw=violet!70, dashed},
+    group_box/.style={rectangle, draw=black!50, rounded corners=4pt, inner sep=10pt, dashed}
+]
+% ---------------- DATA PLANE ----------------
+\node[block] (ingest) {Ingestion \& \\ Feat. Enrich};
+\node[block, right=of ingest] (scpt) {Windowed Single \\ Camera Tracking};
+\node[block, right=of scpt] (join) {Topology-Aware \\ Stream Aggregation};
+\node[block, right=of join] (mcpt) {Rep. Selection \\ \& HAC Cluster};
+\node[block, right=of mcpt] (global) {Global Identity \\ Maintenance};
+\node[table, above=1.0cm of mcpt] (calibration) {Calibration\\Table};
+\node[table, above=1.0cm of global] (globaltable) {GlobalIDTable};
+% ---------------- CONTROL PLANE ----------------
+\node[ctrltable, above=1.0cm of join] (topology) {CameraTopology\\Table};
+\node[ctrltable, above=1.0cm of scpt] (configtable) {MCPTConfig\\Table};
+\node[ctrlblock, above=1.0cm of topology] (reconfig) {Reactive Reconfiguration Loop\\ \scriptsize (Connected Components; EPL deploy/undeploy)};
+% control event streams entering from the left
+\draw[ctrl] ($ (configtable.north west) + (-1.2,0.4) $) -- node[above, font=\scriptsize, sloped] {MCPTConfig events} (configtable.north west);
+% CameraTopology events: split to two parallel targets
+\draw[ctrl] ($ (reconfig.west) + (-2.5,0) $) -- node[above, font=\scriptsize] {CameraTopology events} ($ (reconfig.west) + (-1.0,0) $);
+\draw[ctrl] ($ (reconfig.west) + (-1.0,0) $) -- (reconfig.west);
+\draw[ctrl] ($ (reconfig.west) + (-1.0,0) $) |- (topology.west);
+% control wiring
+\path (reconfig.east) ++(0.5,0) coordinate (rjoin);
+\draw[ctrl] (reconfig.east) -- (rjoin) |- (join.east);
+\path (rjoin) ++(0.1,-0.2) node[right, font=\scriptsize] {deploy / undeploy};
+% table read by aggregation queries
+\path (topology.south) ++(0,-0.45) coordinate (tjoin);
+\draw[ctrl] (topology.south) -- (tjoin) -| (join.north);
+\path (tjoin) ++(0.15,0) node[right, font=\scriptsize] {queryable state};
+\draw[ctrl] (configtable.south) .. controls +(0,-0.6) and +(-1.2,0.8) .. node[below, font=\scriptsize, sloped, pos=0.6] {param. updates via listener} (mcpt.north west);
+% ---------------- Data-plane arrows ----------------
+\draw[stream] ($ (ingest.west) - (1cm,0) $) -- node[above] {\scriptsize Detections} (ingest.west);
+\draw[arrow] (ingest) -- node[above] {\scriptsize stream} (scpt);
+\draw[arrow] (scpt) -- node[above, align=center] {\scriptsize SingleCam\\ \scriptsize Result} (join);
+\draw[arrow] (join) -- node[above, align=center] {\scriptsize Synced\\ \scriptsize Group} (mcpt);
+\draw[arrow] (mcpt) -- node[above] {\scriptsize Updates} (global);
+\draw[staterw] (calibration) -- node[right] {\scriptsize reads} (mcpt);
+\draw[staterw, <->] (globaltable) -- node[right, align=left] {\scriptsize merge/delete\\ \scriptsize (TrackExpired)} (global);
+% ---------------- Group backgrounds ----------------
+\begin{scope}[on background layer]
+    \node[group_box, fit=(join) (mcpt), fill=green!5,
+      label={[anchor=base, inner sep=1pt, font=\scriptsize\bfseries\sffamily]below:Cross-Camera Association}] {};
+    \node[group_box, draw=violet!50, fit=(reconfig) (configtable) (topology), fill=violet!3,
+      label={[anchor=north east, inner sep=3pt, font=\scriptsize\bfseries\sffamily, text=violet!70!black]north east:Control Plane}] {};
+\end{scope}
+\end{tikzpicture}
+}
+\caption{\textbf{STREAMTRACK} operator graph. The \emph{data plane} (bottom) processes detections through single-camera tracking, topology-aware aggregation, and HAC clustering, with \texttt{CalibrationTable} and \texttt{GlobalIDTable} as relational state. The \emph{control plane} (top, violet) enables \texttt{CameraTopology} and \texttt{MCPTConfig} events to upsert into control tables, while a reactive reconfiguration loop recomputes connected components and deploys or undeploys association queries at runtime with zero downtime.}
+\label{fig:architecture}
+\end{figure}
+
+\subsection{Data Plane: Incremental Stream Processing}
+1) \textbf{Ingestion and Intra-Camera Overlap Suppression (S2S):} Per-camera detection streams undergo Non-Maximum Suppression (NMS) at the ingestion boundary to eliminate spatially and temporally overlapping duplicate bounding boxes within each camera's field of view. Crucially, this detection-level suppression is distinct from \emph{multi-camera Field-of-View (FoV) overlap}: NMS operates on bounding-box coordinates within an individual stream to clean raw detector output, whereas FoV overlap is a cross-camera spatial relation explicitly modeled in the \texttt{CameraTopologyTable}.
+
+2) \textbf{Windowed Single-Camera Tracking (S2R):} Local frame detections are grouped into tracklet segments over a 3-second sliding window (\texttt{win:time(3 sec)}), outputting structured single-camera result events.
+
+3) \textbf{Representative Feature Selection (S/R2S):} For each tracklet, the system queries the \texttt{CalibrationTable} to select top-$k$ discriminative observations based on anatomical keypoint confidence and embedding temporal stability. Keypoint visibility filters reject occluded bounding boxes, preventing corrupted features from entering Re-ID matching.
+
+4) \textbf{Topology-Aware Aggregation and HAC Clustering (S2R $\to$ R2S):} Tracklets belonging to the same spatial neighbourhood are synchronized by window index and joined. At window boundaries, a windowed Hierarchical Agglomerative Clustering (HAC) kernel clusters tracklet appearance embeddings into global identity candidates.
+
+5) \textbf{Global Identity Maintenance (S/R2R and R2S):} Identity mappings are materialised in a persistent relational \texttt{GlobalIDTable}. Derived cluster events trigger atomic \texttt{on-merge} upserts that update last-seen timestamps and spatial coordinates. To enforce deterministic memory bounds under sustained load, priority-ordered timer queries evict stale tracks (unseen for $>120$~seconds), emitting a \texttt{TrackExpiredEvent} (R2S) before executing an R2R row deletion to garbage-collect heavy feature tensors.
+
+\begin{figure}[t!]
+    \centering
+    \includegraphics[width=0.70\linewidth]{Evidence/map_topology.png}
+    \caption{Topological partitioning of the 9-camera NVIDIA SmartSpaces network into four spatial groups: Group 1 (blue: C02, C17), Group 2 (green: C01, C11), Group 3 (orange: C19, C27), and Group 4 (purple: C21, C25, C30).}
+    \label{fig:topology_map}
+\end{figure}
+
+\subsection{Cross-Camera Candidate Pruning and Join Planning}
+Naive all-pairs matching across $m$ cameras evaluates $\binom{m}{2}$ pairs. When the network is partitioned into $k$ spatial topology groups of sizes $n_1, \dots, n_k$ ($\sum n_i = m$), the required candidate evaluations drop sharply to $\sum_{i=1}^{k} \binom{n_i}{2}$.
+
+For our 9-camera deployment (Fig.~\ref{fig:topology_map}) partitioned into four spatial groups ($\{[02,17], [01,11], [19,27], [21,25,30]\}$), candidate evaluations decrease from $\binom{9}{2} = 36$ to $1+1+1+3 = 6$ camera pairs---a \textbf{6$\times$ candidate search space reduction}. Physical execution bakes these topology filters into query plans during compilation, avoiding per-tuple table probes on the hot path.
+
+\subsection{Transitional Gating for Non-Overlapping Cameras}
+To track objects across isolated, non-overlapping cameras without identity fragmentation, the topology relation maintains both overlapping edges ($E_{\text{overlap}}$) and directed transition edges ($E_{\text{transition}}$). During global association, candidate comparisons between historical tracks $T_H$ in \texttt{GlobalIDTable} and current cluster $C_{\text{curr}}$ are gated by:
+\begin{equation}
+\mathrm{ReIDAllowed}(T_H, C_{\mathrm{curr}}) = 
+\begin{cases}
+\text{True}, & \text{if } c_{\mathrm{last}} \in C_{\mathrm{curr}} \\
+\text{True}, & \text{if } \exists c \in C_{\mathrm{curr}} \text{ s.t. } \\
+             & (c_{\mathrm{last}}, c) \in E_{\mathrm{ovl}} \cup E_{\mathrm{trn}} \\
+\text{False}, & \text{otherwise}
+\end{cases}
+\end{equation}
+where $c_{\mathrm{last}} = \text{LastCam}(T_H)$, $E_{\mathrm{ovl}} = E_{\text{overlap}}$, and $E_{\mathrm{trn}} = E_{\text{transition}}$. This restricts candidate comparisons strictly to physically valid travel routes, preventing false matches across distant areas of the network.
+
+\subsection{Control Plane: Reactive Reconfiguration Loop}
+Camera topology is stored in a mutable relational \texttt{CameraTopologyTable}. When administrators stream \texttt{CameraTopology} update events (e.g., adding a link or notifying a camera outage), an \texttt{on-merge} query updates table state, while a parallel event listener triggers a Java controller (\texttt{reconcileDeployments()}). The controller recomputes connected components over the neighbourhood graph, undeploys obsolete aggregation queries, and compiles fresh EPL join queries targeting the new camera groups at runtime. This enables \textbf{zero-downtime reconfiguration} without pipeline restarts or loss of state.
+
+Similarly, tracking parameters (e.g., similarity threshold $\text{simTh}$, clustering radius $\epsilon_{\text{mcpt}}$) are held in an \texttt{MCPTConfigTable} and dynamically re-read on every window call.
+
+% -------------------------------------------------------------------------
+\section{Experimental Evaluation}
+\label{sec:evaluation}
+
+\subsection{Experimental Setup}
+All experiments were conducted on an Intel Core i7-10610U CPU (4 cores, 8 threads, 1.80~GHz), 32~GB RAM, running 64-bit Windows 11 Pro and OpenJDK 21 (JBR-21.0.8). JVM heap was capped at \texttt{-Xms256m -Xmx256m} to simulate resource-constrained edge gateways. Esper version 9.0.0 served as the CEP engine. Evaluated datasets include: (1) Woven VisionAI WTS dataset (Scene 2, 4 cameras) for functional parity and stage speedups; and (2) NVIDIA SmartSpaces dataset (9 cameras) for topological candidate pruning and live network reconfiguration.
+
+\subsection{RQ1: Five-Stage Implementation Parity and Speedup}
+To verify that our architectural re-engineering preserves vision tracking accuracy, we conducted a \textbf{five-stage parity evaluation} against the JVM-native batch baseline (OSC pipeline~\cite{yoshida2024overlap}):
+\begin{enumerate}
+    \item \textbf{Numerical Parity:} Cosine matrices match across RAW, ZEROED, and REPLACED stages ($\text{MAD} = 1.63 \times 10^{-8}$, 99.01\% exact bit match).
+    \item \textbf{Structural Parity:} Adjusted Rand Index ($\text{ARI}$) and Normalized Mutual Information ($\text{NMI}$) achieve \textbf{1.0000} across all 175 tracklets (14/14 identity clusters match perfectly).
+    \item \textbf{Post-Processing Parity:} Within-camera NMS and warp-merge fusion generate identical label assignments ($\text{ARI} = \text{NMI} = 1.0000$).
+    \item \textbf{Topology Parity:} Inter-camera matrix converges to an identical $12\times 12$ shape.
+    \item \textbf{Identity Parity:} Final global person identity assignments match with \textbf{100.00\% structural equivalence}.
+\end{enumerate}
+
+\begin{table}[t!]
+\centering
+\caption{Five-Stage Parity and Architectural Speedup (Woven WTS Dataset)}
+\label{tab:performance_combined}
+\resizebox{\linewidth}{!}{
+\begin{tabular}{lrrrc}
+\toprule
+\textbf{Pipeline Stage} & \textbf{Batch (ms)} & \textbf{Streaming (ms)} & \textbf{Speedup} & \textbf{Parity Metric} \\
+\midrule
+Representative Selection & 10,235.16 & $34.06 \pm 36.52$ & \textbf{12.0$\times$} & Keypoint Exact \\
+Clustering (HAC) & 20,366.55 & $86.16 \pm 68.86$ & \textbf{9.5$\times$} & ARI = NMI = 1.00 \\
+Global ID Management & 521.00 & $3.13 \pm 1.97$ & \textbf{6.7$\times$} & 100\% Match \\
+Matrix Zeroing & 6.09 & $0.03 \pm 0.04$ & \textbf{8.6$\times$} & MAD $= 0.99\times 10^{-8}$ \\
+Re-ID Similarity Matrix & 65.08 & $3.67 \pm 8.28$ & Parity & MAD $= 1.63\times 10^{-8}$ \\
+World Coord. Measure & 8.65 & $1.25 \pm 0.79$ & Parity & Exact Match \\
+World Coord. Replace & 0.06 & $0.002 \pm 0.010$ & \textbf{1.0$\times$} & Exact Match \\
+\midrule
+\textbf{Total MCPT Processing} & \textbf{31,620.00} & \textbf{$129.27 \pm 92.49$} & \textbf{9.8$\times$} & \textbf{Global ID 100\%} \\
+\bottomrule
+\end{tabular}
+}
+\end{table}
+
+\begin{figure}[t!]
+    \centering
+    \includegraphics[width=0.75\linewidth]{Evidence/fig_cumulative_mcpt.png}
+    \caption{Cumulative MCPT latency across 25 consecutive windows on the Woven WTS dataset (4 cameras). Incremental streaming achieves a \textbf{9.8$\times$} speedup over the batch baseline by eliminating redundant state recomputation.}
+    \label{fig:cumulative_mcpt}
+\end{figure}
+
+Architecturally, the batch baseline re-reads and re-processes full historical feature archives from disk on every window ($O(N^2)$ growth), requiring 31,620~ms total. \textbf{STREAMTRACK} maintains state incrementally in relational tables, reducing cumulative execution to 3,232~ms---delivering an overall \textbf{9.8$\times$ end-to-end speedup} (Fig.~\ref{fig:cumulative_mcpt}), with individual stage gains of \textbf{12.0$\times$} in representative selection and \textbf{9.5$\times$} in HAC clustering.
+
+\subsection{Clustering Operator Choice and Topological Optimization}
+We benchmarked windowed HAC against specialized stream-clustering algorithms (CluStream~\cite{aggarwal2003framework} and ClusTree~\cite{kranen2011clustree} via MOA). HAC achieves superior latency ($82.4$~ms) and 100\% identity precision for typical MCOT window sizes ($N=50$--$500$), whereas micro-cluster summaries in CluStream introduce high initialization overhead ($3,854.2$~ms) and blur fine-grained appearance features.
+
+Evaluating candidate pruning on the 9-camera NVIDIA SmartSpaces network demonstrates the impact of spatial partitioning (Table~\ref{tab:9camera_performance}). Partitioning the 9 cameras into 4 topological groups reduces average association latency from 41.96~ms to 10.10~ms (\textbf{4.16$\times$ speedup} with JVM JIT warm-up) and to 9.15~ms (\textbf{4.27$\times$ speedup} in steady state).
+
+\begin{table}[t!]
+\centering
+\caption{Topological Optimization Impact (NVIDIA SmartSpaces, 10 Runs)}
+\label{tab:9camera_performance}
+\resizebox{\linewidth}{!}{
+\begin{tabular}{lccc}
+\toprule
+\textbf{Execution Mode} & \textbf{Global (1 Group)} & \textbf{Topology-Aware (4 Groups)} & \textbf{Speedup} \\
+\midrule
+Avg. Latency (inc. JIT warm-up) & $41.96 \pm 22.39$ ms & $10.10 \pm 11.11$ ms & \textbf{4.16$\times$} \\
+Avg. Latency (exc. JIT warm-up) & $39.04 \pm 18.56$ ms & $9.15 \pm 8.27$ ms & \textbf{4.27$\times$} \\
+\bottomrule
+\end{tabular}
+}
+\end{table}
+
+\subsection{RQ3: Zero-Downtime Runtime Reconfiguration}
+We validated live network resilience by simulating a camera outage on the 9-camera layout. At frame 180, an event disabling Camera 30's links was injected without stopping the pipeline. The control loop recomputed connected components and redeployed affected queries in \textbf{337~ms}. Restoring links at frame 360 completed recovery in \textbf{190~ms} (Table~\ref{tab:reconfig_combined}).
+
+\begin{table}[t!]
+\centering
+\caption{Live Network Reconfiguration Timing and Global ID State Continuity}
+\label{tab:reconfig_combined}
+\resizebox{\linewidth}{!}{
+\begin{tabular}{lccc}
+\toprule
+\textbf{Reconfiguration Event} & \textbf{Deploy/Undeploy} & \textbf{Time} & \textbf{Active Global IDs} \\
+\midrule
+Initial Deployment (Add all) & 8 dep., 0 undep. & 1759~ms & 1, 2, 3, 4, 5, 6 (Win 2) \\
+Topology Merge (Add link) & 1 dep., 2 undep. & 181~ms & 1, 2, 3, 4, 5, 6 (Pre-Outage) \\
+Camera Outage (Frame 180) & 2 dep., 1 undep. & 337~ms & 1, 2, 3, 4, 5, 6 (Outage Win 3) \\
+Camera Recovery (Frame 360) & 1 dep., 2 undep. & 190~ms & 1, 2, 3, 4, 5, 6 (Recovery Win 4) \\
+\bottomrule
+\end{tabular}
+}
+\end{table}
+
+Querying the \texttt{GlobalIDTable} before, during, and after reconfiguration (Table~\ref{tab:reconfig_combined}) confirms that all active identities (Global IDs 1--6) persisted intact across transitions, proving \textbf{zero-downtime reconfigurability with 100\% state preservation}.
+
+% -------------------------------------------------------------------------
+\section{Discussion and Systems Implications}
+\label{sec:discussion}
+
+\subsection{Occlusion Handling Strategies in Streaming MCOT}
+Visual occlusion caused by obstacles or crowds is a major bottleneck in MCOT. In \textbf{STREAMTRACK}, short-term intra-camera occlusions are cushioned by the 3-second SCT window, while keypoint confidence filters in Representative Selection reject occluded bounding boxes. For long-term cross-camera occlusions, our model provides two architectural mechanisms:
+\begin{enumerate}
+    \item \textbf{Relational State Persistence:} Un-matched global identities persist in \texttt{GlobalIDTable} for up to 120~s without identity decay, allowing occluded targets to re-associate seamlessly upon reappearance.
+    \item \textbf{CEP Pattern-Matching for Predictive Occlusion:} Complex Event Processing allows declaring temporal sequence patterns (e.g., matching a \texttt{TrackLostEvent} followed within bounds by a candidate entry). This pattern triggers predictive Kalman trajectory interpolation over world coordinates in \texttt{CalibrationTable}, maintaining virtual tracks through occluded zones.
+\end{enumerate}
+
+\subsection{Operational Advantages}
+Expressing MCOT as continuous queries over relational state provides major operational benefits:
+\begin{itemize}
+    \item \textbf{Inspectable Identity State:} Developers and operators can query \texttt{GlobalIDTable} using standard SQL to audit assignments and trace object trajectories in real time.
+    \item \textbf{Edge-Cloud Partitioning Feasibility:} Per-camera single-camera tracking can execute on edge devices, emitting compact \texttt{SingleCameraResult} events over low-bandwidth links to a centralized CEP coordinator, which averages only $9.15$~ms per topology group.
+\end{itemize}
+
+% -------------------------------------------------------------------------
+\section{Conclusion and Future Work}
+\label{sec:conclusion}
+We presented \textbf{STREAMTRACK}, re-architecting Multi-Camera Object Tracking as a relational streams-and-tables system on an embeddable CEP engine. By converting monolithic pipeline state into queryable relations and cross-camera matching into topology-gated stream joins, \textbf{STREAMTRACK} achieves a \textbf{9.8$\times$} end-to-end speedup, a \textbf{4.16$\times$} topology-aware latency reduction, and sub-second zero-downtime reconfiguration while maintaining 100\% functional output parity. Future work includes exploring multi-hop transitive topology joins and physical edge-cloud deployment.
+
+% -------------------------------------------------------------------------
+% REFERENCES
+% -------------------------------------------------------------------------
+{\footnotesize
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+}
+
+\end{document}
