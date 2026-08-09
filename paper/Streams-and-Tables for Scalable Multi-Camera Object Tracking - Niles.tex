@@ -1,43 +1,11 @@
 \documentclass[conference]{IEEEtran}
-
-\makeatletter
-
-\def\ps@IEEEtitlepagestyle{%
-  \def\@oddfoot{\mycopyrightnotice}%
-  \def\@evenfoot{}%
-}
-\def\mycopyrightnotice{%
-  {\footnotesize XXX-X-XXXX-XXXX-X/XX/\$XX.00~\copyright~20XX IEEE\hfill}% <--- Change here (camera-ready)
-  \gdef\mycopyrightnotice{}
-}
-
-\usepackage{eso-pic}
 \IEEEoverridecommandlockouts
-% The preceding line is only needed to identify funding in the first footnote. If that is unneeded, please comment it out.
+% IEEEtran standard template packages
 \usepackage{cite}
 \usepackage{amsmath,amssymb,amsfonts}
-\usepackage{algorithmic}
 \usepackage{graphicx}
 \usepackage{textcomp}
 \usepackage{xcolor}
-\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
-    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
-    
-\usepackage{eso-pic}
-\newcommand\AtPageUpperMyright[1]{\AtPageUpperLeft{%
- \put(\LenToUnit{0.17\paperwidth},\LenToUnit{-2cm}){%
-     \parbox{0.9\textwidth}{\raggedleft\fontsize{8}{11}\selectfont #1}}%
- }}%
-\newcommand{\conf}[1]{%
-\AddToShipoutPictureBG*{%
-\AtPageUpperMyright{#1}
-}
-}    
-
-% ---------------------------------------------------------------------------
-% Content-support packages required by the manuscript body
-% (kept from the original draft; not part of the ACDSA template itself)
-% ---------------------------------------------------------------------------
 \usepackage{booktabs}
 \usepackage{multirow}
 \usepackage{url}
@@ -46,15 +14,31 @@
 \usepackage{tikz}
 \usetikzlibrary{shapes.geometric, shapes.symbols, arrows.meta, positioning, fit, backgrounds, calc}
 
+% Compact list and float spacing for strict 4-page target
+\setlist[enumerate]{leftmargin=*,itemsep=0pt,topsep=1pt,parsep=0pt}
+\setlist[itemize]{leftmargin=*,itemsep=0pt,topsep=1pt,parsep=0pt}
+\setlength{\textfloatsep}{3pt plus 1pt minus 1pt}
+\setlength{\floatsep}{3pt plus 1pt minus 1pt}
+\setlength{\intextsep}{3pt plus 1pt minus 1pt}
+\setlength{\abovedisplayskip}{2pt}
+\setlength{\belowdisplayskip}{2pt}
+\setlength{\abovecaptionskip}{2pt}
+\setlength{\belowcaptionskip}{2pt}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
 \begin{document}
-\title{\vspace*{1cm} Streams-and-Tables for Scalable Multi-Camera Object Tracking}
+
+\title{Streams-and-Tables for Scalable Multi-Camera Object Tracking}
 
 % =========================================================================
-% AUTHOR BLOCK (ANONYMIZED FOR DOUBLE-BLIND REVIEW)
+% AUTHOR BLOCK (ANONYMIZED FOR INITIAL DOUBLE-BLIND REVIEW PER NILES GUIDELINES)
 % To activate full camera-ready author details, uncomment the section below.
 % =========================================================================
 \author{\IEEEauthorblockN{Anonymous Author(s)}
-\IEEEauthorblockA{\textit{Affiliation Omitted for Double-Blind Review}}
+\IEEEauthorblockA{\textit{Affiliation Omitted for Double-Blind Review} \\
+\textit{NILES 2026 Submission}}
 }
 
 %\author{
@@ -70,8 +54,6 @@
 %}
 
 \maketitle
-\conf{\textit{Proc. of International Conference on Artificial Intelligence, Computer, Data Sciences and Applications (ACDSA 2027) \\
-2-4 February 2027, Rio de Janeiro-Brazil}}
 
 \begin{abstract}
 Multi-camera object tracking (MCOT) systems are traditionally constructed as monolithic computer-vision pipelines, causing combinatorial candidate explosions across non-adjacent cameras, burying identity state in program variables, and requiring hard restarts when camera network topology changes. We argue these limitations are architectural rather than algorithmic, and present a relational \emph{streams-and-tables} architecture for MCOT realized on an embeddable Complex Event Processing (CEP) engine: detections flow as append-only streams, identities and topology are queryable relational tables, and cross-camera association is a continuous topology-aware stream join. Evaluated on the Woven WTS and 9-camera NVIDIA SmartSpaces datasets, our system preserves exact functional parity with a JVM port of a state-of-the-art batch pipeline while delivering a \textbf{9.8$\times$} speedup (\textbf{12.0$\times$} in representative selection, \textbf{9.5$\times$} in clustering) and a \textbf{4.16$\times$} latency reduction, with live topology events enabling zero-downtime reconfiguration in 190--337~ms.
@@ -96,6 +78,7 @@ The computer vision community traditionally treats multi-camera tracking scalabi
     \item \textbf{Brittle, Static Topology:} Camera networks undergo frequent changes: cameras are added, removed, or re-linked. When topology is hardcoded into pipeline logic, reconfiguration requires editing code and restarting the pipeline, destroying accumulated tracking state.
 \end{enumerate}
 
+\vspace{-0.5em}
 \subsection{Proposed Paradigm: Streams and Tables}
 We argue these operational vulnerabilities stem from \emph{monolithic software architecture} rather than vision-algorithm constraints. Drawing on the \emph{stream--table duality}~\cite{sax2018streams}, we propose a continuous stream-processing architecture for MCOT. Detections and tracklet updates arrive as append-only event \emph{streams}; global identities and camera topology are maintained as mutable, queryable relational \emph{tables}; and cross-camera association is formulated as continuous spatial joins over live topology relations. Realized on an embeddable CEP engine, high-dimensional feature tensors are shared zero-copy in memory, isolating architectural speedups from runtime/language overheads.
 
@@ -209,14 +192,7 @@ For our 9-camera deployment (Fig.~\ref{fig:topology_map}) partitioned into four 
 \end{figure}
 
 \subsection{Transitional Gating for Non-Overlapping Cameras}
-To track objects across isolated, non-overlapping cameras without identity fragmentation, the topology relation maintains overlapping edges ($E_{\text{overlap}}$) and directed transition edges ($E_{\text{transition}}$). Global association allows comparing a historical track $T_H$ (last seen at camera $c_{\mathrm{last}}$) with a current cluster $C_{\mathrm{curr}}$ only if $c_{\mathrm{last}}$ belongs to $C_{\mathrm{curr}}$ or shares an overlap/transition edge with some camera in $C_{\mathrm{curr}}$---restricting matching to physically valid travel routes and preventing false matches across distant areas (Fig.~\ref{fig:transition_flow}).
-
-\begin{figure}[t!]
-    \centering
-    \includegraphics[width=0.72\linewidth]{Evidence/map_transition_flow.png}
-    \caption{Illustrative transition topology mapping for isolated (non-overlapping) cameras. A person leaving the field of view of \texttt{Camera 12} can transition to \texttt{Camera 02}, \texttt{Camera 13}, or \texttt{Camera 17}. Transitional gating restricts Re-ID candidate matching to these paths, preventing identity fragmentation across non-overlapping zones.}
-    \label{fig:transition_flow}
-\end{figure}
+To track objects across isolated, non-overlapping cameras without identity fragmentation, the topology relation maintains overlapping edges ($E_{\text{overlap}}$) and directed transition edges ($E_{\text{transition}}$). Global association allows comparing a historical track $T_H$ (last seen at camera $c_{\mathrm{last}}$) with a current cluster $C_{\mathrm{curr}}$ only if $c_{\mathrm{last}}$ belongs to $C_{\mathrm{curr}}$ or shares an overlap/transition edge with some camera in $C_{\mathrm{curr}}$---restricting matching to physically valid travel routes and preventing false matches across distant areas.
 
 \subsection{Control Plane: Reactive Reconfiguration Loop}
 Camera topology is stored in a mutable \texttt{CameraTopologyTable}. When administrators stream \texttt{CameraTopology} update events (e.g., adding a link or camera outage), an \texttt{on-merge} query updates table state while a parallel listener triggers a Java controller (\texttt{reconcileDeployments()}) that recomputes connected components, undeploys obsolete aggregation queries, and compiles fresh EPL joins for the new groups---\textbf{zero-downtime reconfiguration} without restarts or state loss.
@@ -272,34 +248,10 @@ World Coord. Replace & 0.06 & $0.002 \pm 0.010$ & \textbf{1.0$\times$} & Exact M
     \label{fig:cumulative_mcpt}
 \end{figure}
 
-The batch baseline re-reads and re-processes full historical feature archives from disk each window ($O(N^2)$ growth), requiring 31,620~ms total; our system maintains state incrementally in relational tables, reducing cumulative execution to 3,232~ms---a \textbf{9.8$\times$ end-to-end speedup} (Fig.~\ref{fig:cumulative_mcpt}), with \textbf{12.0$\times$} in representative selection and \textbf{9.5$\times$} in HAC clustering. The Re-ID similarity matrix and world-coordinate measure stages show no amortization benefit ($0.7\times$ and $0.3\times$): both pipelines recompute these structures per window over the maintained state, whereas the dominant stages (representative selection, HAC clustering) reuse incremental state. Fig.~\ref{fig:stage_speedup} contrasts the per-stage batch-versus-streaming costs directly.
-
-\begin{figure}[t!]
-    \centering
-    \includegraphics[width=0.95\linewidth]{Evidence/fig_stage_speedup.png}
-    \caption{Stage-by-stage comparison of batch (cumulative over 25 windows) versus incremental streaming (per-window mean). The dominant stages---representative selection and HAC clustering---benefit most from incremental state maintenance (12.0$\times$ and 9.5$\times$), while per-window recomputation stages show near parity.}
-    \label{fig:stage_speedup}
-\end{figure}
+The batch baseline re-reads and re-processes full historical feature archives from disk each window ($O(N^2)$ growth), requiring 31,620~ms total; our system maintains state incrementally in relational tables, reducing cumulative execution to 3,232~ms---a \textbf{9.8$\times$ end-to-end speedup} (Fig.~\ref{fig:cumulative_mcpt}), with \textbf{12.0$\times$} in representative selection and \textbf{9.5$\times$} in HAC clustering. The Re-ID similarity matrix and world-coordinate measure stages show no amortization benefit ($0.7\times$ and $0.3\times$): both pipelines recompute these structures per window over the maintained state, whereas the dominant stages (representative selection, HAC clustering) reuse incremental state.
 
 \subsection{RQ2: Clustering Operator Choice and Topological Optimization}
-We benchmarked windowed HAC~\cite{mullner2011modern} against specialized stream-clustering algorithms (CluStream~\cite{aggarwal2003framework} and ClusTree~\cite{kranen2011clustree} via MOA~\cite{bifet2010moa}). HAC achieves the lowest latency ($82.4$~ms) and 100\% identity precision (fraction of tracklets matching their reference identity) at MCOT window sizes ($N=50$--$500$), whereas CluStream's micro-clusters add high initialization overhead ($3{,}854.2$~ms; 82.5\%) and blur appearance features; ClusTree is comparable ($2{,}510.8$~ms; 78.1\%), as summarized in Table~\ref{tab:clustering_comparison}.
-
-\begin{table}[t!]
-\centering
-\caption{Clustering Operator Comparison (NVIDIA SmartSpaces, 50-Window Average)}
-\label{tab:clustering_comparison}
-\resizebox{\linewidth}{!}{
-\begin{tabular}{lrrr}
-\toprule
-\textbf{Algorithm} & \textbf{Avg. Latency (ms)} & \textbf{ID Precision} & \textbf{Overhead} \\
-\midrule
-\textbf{HAC} & \textbf{82.4} & \textbf{100.0\%} & \textbf{Minimal} \\
-CluStream (MOA) & 3,854.2 & 82.5\% & High (Init) \\
-ClusTree (MOA) & 2,510.8 & 78.1\% & Moderate \\
-\bottomrule
-\end{tabular}
-}
-\end{table}
+We benchmarked windowed HAC against specialized stream-clustering algorithms (CluStream~\cite{aggarwal2003framework} and ClusTree~\cite{kranen2011clustree} via MOA). HAC achieves the lowest latency ($82.4$~ms) and 100\% identity precision (fraction of tracklets matching their reference identity) at MCOT window sizes ($N=50$--$500$), whereas CluStream's micro-clusters add high initialization overhead ($3{,}854.2$~ms; 82.5\%) and blur appearance features; ClusTree is comparable ($2{,}510.8$~ms; 78.1\%).
 
 On the 9-camera NVIDIA SmartSpaces network (Table~\ref{tab:9camera_performance}), partitioning into 4 topological groups reduces average association latency from 41.96~ms to 10.10~ms (\textbf{4.16$\times$} with JVM JIT warm-up) and to 9.15~ms (\textbf{4.27$\times$} steady state).
 
@@ -320,14 +272,7 @@ Avg. Latency (exc. JIT warm-up) & $39.04 \pm 18.56$ ms & $9.15 \pm 8.27$ ms & \t
 \end{table}
 
 \subsection{RQ3: Zero-Downtime Runtime Reconfiguration}
-We validated live resilience by simulating a camera outage: at frame 180, an event disabling Camera 30's links was injected without stopping the pipeline; the control loop redeployed affected queries in \textbf{337~ms}, with recovery at frame 360 in \textbf{190~ms}---both negligible relative to the 3-second synchronisation window. Fig.~\ref{fig:reconfig_before_after} visualises the resulting topology transition on the actual floor plan.
-
-\begin{figure}[t!]
-    \centering
-    \includegraphics[width=0.9\linewidth]{Evidence/map_reconfig_combined.png}
-    \caption{Runtime topology reconfiguration on the NVIDIA SmartSpaces floor plan. The left panel shows the initial four-group topology; the right panel shows the state after a Camera~30 network outage, where it is isolated as a standalone group (red). The outage transition completed in \textbf{337~ms} and the subsequent recovery in \textbf{190~ms}, both with \textbf{zero downtime}.}
-    \label{fig:reconfig_before_after}
-\end{figure}
+We validated live resilience by simulating a camera outage: at frame 180, an event disabling Camera 30's links was injected without stopping the pipeline; the control loop redeployed affected queries in \textbf{337~ms}, with recovery at frame 360 in \textbf{190~ms}---both negligible relative to the 3-second synchronisation window.
 
 \begin{table}[t!]
 \centering
@@ -350,21 +295,17 @@ Camera Recovery (Frame 360) & 1 dep., 2 undep. & 190~ms & 1, 2, 3, 4, 5, 6 (Reco
 
 All active identities (Global IDs 1--6) persisted across both transitions (Table~\ref{tab:reconfig_combined}), proving \textbf{zero-downtime reconfigurability with 100\% state preservation}.
 
-The timing decomposition shows that reconfiguration overhead is dominated by query compilation, not state: the initial deployment of the eight aggregation queries took 1{,}759~ms (including JVM warm-up and first EPL compilation), while subsequent single-group topology merges completed in 170--191~ms each, all far below the 3-second synchronisation window.
-
-The same event-driven pattern extends beyond topology to the algorithmic parameters of the tracker. \texttt{simTh}, \texttt{epsilonMcpt}, and \texttt{shortTrackTh} are stored in an \texttt{MCPTConfigTable} and updated reactively by streaming \texttt{MCPTConfig} events; the MCPT kernel re-reads fresh values on every window call. To demonstrate this, we injected three parameter changes at frame 270---tightening the similarity threshold \texttt{simTh} from 0.75 to 0.85, reducing the clustering radius \texttt{epsilonMcpt} from 0.37 to 0.30, and raising the short-track pruning threshold \texttt{shortTrackTh} from 0 to 1---all applied with no restart, no code modification, and no loss of accumulated tracking state, with the new values effective from the very next synchronisation window. This is a capability demonstration of runtime parameter adaptation rather than an accuracy benchmark target; its purpose is to show that the streams-and-tables substrate supports operational tuning without downtime, complementing the latency results measured for topology changes.
-
 % -------------------------------------------------------------------------
 \section{Discussion and Systems Implications}
 \label{sec:discussion}
 
 \subsection{Occlusion Handling}
-Occlusion handling is layered across the pipeline. Intra-camera occlusion is absorbed by the 3-second SCT window: a temporarily occluded person's tracklet remains active within the window, and visibility filtering rejects heavily occluded boxes before representative selection by requiring a minimum number of high-confidence anatomical keypoints (\texttt{keypointConditionTh}). Cross-camera occlusion and temporary disappearance are handled by the \texttt{GlobalIDTable}: un-matched identities persist for up to 120~s and re-associate on reappearance through the same topology-gated Re-ID path, while a priority-ordered timer emits \texttt{TrackExpiredEvent} to evict only truly stale tracks. The camera-outage experiment of Section~\ref{sec:evaluation} exercises precisely this mechanism: when Camera~30's links were disabled, identities 1--6 remained resident in the table across the outage window and re-associated unchanged after recovery---the same state-continuity behaviour required to bridge an occluded interval. Predictive interpolation through occluded zones via CEP patterns is future work.
+Short-term intra-camera occlusions are cushioned by the 3-second SCT window and keypoint filters reject occluded boxes. Long-term cross-camera occlusions rely on \texttt{GlobalIDTable} persistence (un-matched identities survive up to 120~s and re-associate on reappearance) and \texttt{TrackExpiredEvent}-driven re-association; predictive interpolation through occluded zones via CEP patterns is future work.
 
 \subsection{Operational Advantages}
-Queryable state lets operators audit identity assignments via standard SQL in real time, and the architecture suggests a natural edge--cloud partitioning. The single-camera tracking stage runs independently per camera and emits one compact \texttt{SingleCameraResult} event per synchronisation window---replacing raw video with a low-bandwidth feature stream---while the topology-aware aggregation and global clustering are centralised in the CEP engine. Our measurements support the feasibility of this split: the association-clustering stage processes a 4-camera window in $129.27 \pm 92.49$~ms on average (streaming) versus 1{,}265~ms per-window for the batch baseline, and a topology-aware group averages $9.15 \pm 8.27$~ms in steady state (Table~\ref{tab:9camera_performance}), so even modest centralised compute can absorb the association workload of many edge cameras.
+Queryable state lets operators audit identity assignments via standard SQL in real time, and per-camera SCT can run on edge devices emitting compact \texttt{SingleCameraResult} events over low-bandwidth links to a centralized coordinator ($9.15$~ms per group).
 
-Two limitations remain: the evaluation is single-node, with physically distributed edge--cloud validation as future work, and topological gating restricts \emph{where} matches are sought but not \emph{how} ambiguous appearances are disambiguated in heavily crowded scenes.
+Two limitations remain: the evaluation is single-node, with distributed edge--cloud validation as future work, and topological gating restricts \emph{where} matches are sought but not \emph{how} ambiguous appearances are disambiguated in heavily crowded scenes.
 
 % -------------------------------------------------------------------------
 \section{Conclusion and Future Work}
