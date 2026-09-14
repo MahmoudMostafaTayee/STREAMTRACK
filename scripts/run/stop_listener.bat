@@ -9,7 +9,7 @@ for /f "tokens=5" %%a in ('netstat -aon ^| findstr :%PORT% ^| findstr LISTENING'
 if "%PID%"=="" (
     echo No process found listening on port %PORT%.
     echo Searching for any Python listener processes...
-    taskkill /F /FI "COMMANDLINE eq python listen_to_table.py" >nul 2>&1
+    taskkill /F /FI "COMMANDLINE eq python scriptsisten_to_table.py" >nul 2>&1
 ) else (
     echo Found process %PID% using port %PORT%. 
     echo Terminating...

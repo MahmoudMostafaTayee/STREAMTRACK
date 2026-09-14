@@ -1,30 +1,101 @@
-Datasets/
-target/
-outputs/
+# ============================
+# Project-specific
+# ============================
+Datasets/*
+!Datasets/README.md
+EmbedFeature/
+Pose/
 output/
+outputs/
+target/
+scratch/
+nul/
+Visualizations/
+
+# ============================
+# IDE
+# ============================
 .settings/
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+*~
 
-# Compiled class file
+# ============================
+# Compiled Java
+# ============================
 *.class
-
-# Log file
-*.log
-
-# BlueJ files
-*.ctxt
-
-# Mobile Tools for Java (J2ME)
-.mtj.tmp/
-
-# Package Files #
 *.jar
 *.war
 *.nar
 *.ear
+
+# ============================
+# Logs & temp text output
+# ============================
+*.log
+*.txt
+!README.txt
+cp.txt
+_parsed_log.txt
+
+# ============================
+# Python
+# ============================
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# ============================
+# OS
+# ============================
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ============================
+# Archives
+# ============================
 *.zip
+*.tar
 *.tar.gz
 *.rar
+*.7z
 
-# virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
+# ============================
+# JVM crash
+# ============================
 hs_err_pid*
 replay_pid*
+
+# ============================
+# Build artifacts & media
+# ============================
+*.mp4
+visualizations/
+
+# ============================
+# LaTeX build intermediates
+# (keep .tex/.bib/figures; ignore aux/log/blg outputs)
+# ============================
+paper/**/*.aux
+paper/**/*.bbl
+!paper/*Camera Ready*.bbl
+paper/**/*.blg
+paper/**/*.log
+paper/**/*.synctex.gz
+paper/**/*.out
+
+# ============================
+# Large generated artifacts (untracked; regenerable)
+# ============================
+*.pdf
+!paper/*.pdf
+!paper/ACDSA_latex/*.pdf
+!paper/IEEE-conference-template-062824/*.pdf
+*.json
+!**/calibration.json
+!config/**/*.json
