@@ -986,38 +986,33 @@ public class ClusteringUtils {
 
                 // Merge
                 if (mergeNonOverlap) {
-                    // In Java, activeId1 and activeId2 are used.
-                    // We need to iterate carefully.
-
-                    // We can't modify the lists we are iterating over strictly speaking if we use
-                    // for-each,
-                    // but we are using indices.
-
-                    // Let's iterate over a copy of activeId2Indices to be safe
-                    List<Integer> currentId2Indices = new ArrayList<>(activeId2Indices);
-
-                    for (int idx2 : currentId2Indices) {
+                    // Match Python's exact behavior: iterate live list with zip-like mechanics.
+                    // Python's zip() iterates live lists; when remove() is called on the
+                    // current element (merge case), the list shrinks and the iterator advances
+                    // past the element that slid into the current position, skipping it.
+                    // A plain for(k) loop with remove(k) in the merge case naturally replicates
+                    // this: k++ causes the next element (which slid into position k) to be skipped.
+                    for (int k = 0; k < activeId2Indices.size(); k++) {
+                        int idx2 = activeId2Indices.get(k);
                         int frame = frames.get(idx2);
                         if (overlapFrames.contains(frame)) {
-                            // Mark as noise
+                            // Noise: mark as -1, DON'T remove from dicts (like Python)
                             clusters.set(idx2, -1);
-
-                            // Update dicts
-                            offlineIdFrameDict.get(activeId2).remove(Integer.valueOf(frame)); // Remove object
-                            offlineIdIndicesDict.get(activeId2).remove(Integer.valueOf(idx2));
                         } else {
-                            // Merge to ID1
+                            // Merge: reassign to activeId1
                             clusters.set(idx2, activeId1);
-
-                            // Update dicts
+                            
+                            // Update id1's dicts (like Python's append)
                             offlineIdFrameDict.get(activeId1).add(frame);
                             offlineIdIndicesDict.get(activeId1).add(idx2);
-
-                            offlineIdFrameDict.get(activeId2).remove(Integer.valueOf(frame));
-                            offlineIdIndicesDict.get(activeId2).remove(Integer.valueOf(idx2));
+                            
+                            // Remove current element from id2's dicts at position k.
+                            // k++ in the for loop then skips the element that slid into position k,
+                            // matching Python's zip() skip behavior exactly.
+                            offlineIdFrameDict.get(activeId2).remove(k);
+                            offlineIdIndicesDict.get(activeId2).remove(k);
                         }
                     }
-
                 } else {
                     // noise logic
                     for (int idx2 : activeId2Indices) {

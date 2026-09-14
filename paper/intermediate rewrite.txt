@@ -1,0 +1,235 @@
+
+
+%Updated single and multi-camera pipelines
+
+\section{Single-Camera Operators}\label{sec:single}
+These operators run independently per camera. They read only per-camera streams, touch none of the cross-camera state tables, and produce the clean \texttt{SingleCameraResult} stream that the cross-camera layer (Section~\ref{sec:multi}) consumes. This is the \emph{local} half of the
+two-problem decomposition introduced in Section~\ref{sec:background:mcot}.
+
+\subsection{Ingestion and Feature Enrichment}
+\label{sec:single:ingestion}
+This stage ingests per-camera detections and attaches appearance-embedding vectors extracted by a pre-trained Re-ID model, emitting the \texttt{embeddingFeature} stream (a stateless S2S map). For cameras where world locations are required, a continuous listener maintains homography
+matrices in the \texttt{CalibrationTable}; this state is later consumed by the native clustering logic, which projects detections from the 2D image plane to a unified ground-plane coordinate system, enabling spatial gating and distance-based heuristics in downstream stages without a
+dedicated streaming operator.
+% TODO(reconcile): the operator-model table (tab:operatormodel) attributes the CalibrationTable
+% read to the Representative Selection stage. Here the table is *maintained* at ingestion via a
+% listener but *used* (projection) downstream. Confirm where projection executes and make the
+% table row and this prose consistent.
+
+\subsection{Single-Camera Tracking as Stateful Stream Processing}
+\label{sec:single:sct}
+Single-camera tracking is a stateful windowed operator (S2R\,$\rightarrow$\,R2S). It maintains detection history within a sliding window (e.g., 90--120 frames) to perform frame-to-frame
+association, aggregating appearance features and keypoint-stability metrics per tracklet, and emits one \texttt{SingleCameraResult} event once the tracklet's window is processed.
+
+\subsection{Overlap Suppression}
+\label{sec:single:overlap}
+Each camera's detection stream is cleaned by an overlap-suppression step that removes redundant, overlapping bounding boxes so that each physical object yields a single best detection rather than several near-duplicate boxes. This is a standard non-maximum suppression (NMS) style post-processing operation~\todo{student: cite NMS / the detector's box-suppression method} applied \emph{independently within a single camera}. As a stateless S2S transformation that consumes detections and emits deduplicated ones, it precedes tracking and improves the quality of the tracklets formed downstream. By removing spurious within-camera duplicates, it also indirectly reduces false candidates entering the cross-camera join.
+
+\paragraph{Disambiguation: overlap suppression vs.\ field-of-view overlap.}
+Overlap suppression must not be confused with \emph{field-of-view (FoV) overlap}, despite the shared term. Overlap suppression operates on \emph{bounding boxes within a single camera}: it is a detection-level deduplication step. FoV overlap is a \emph{multi-camera deployment property}
+in which two or more cameras observe the same physical region, possibly from different viewpoints. FoV overlap is a relation \emph{between} cameras, represented explicitly by the \texttt{overlapping} attribute of the \texttt{CameraTopologyTable} (Section~\ref{sec:multi:topology}), where it determines which cameras are grouped into synchronisation joins. The two concepts operate at different levels---pixels within a camera
+versus visibility across cameras---and are never combined in a single operator.
+% TODO(student confirm): original text placed suppression "within the core clustering module"
+% and mentioned "different cameras". Per the NMS definition this is detection-level and
+% single-camera. Confirm exactly where it executes (detector output vs. a separate operator),
+% and confirm there is no SEPARATE cross-camera duplicate-merge step. If such a cross-camera
+% step exists, it is distinct from NMS and belongs in Section~\ref{sec:multi} under FoV-overlap
+% grouping, not here.
+
+\section{Cross-Camera Operators}\label{sec:multi}
+These operators reason over two or more cameras. They consume the \texttt{SingleCameraResult}
+stream and read or update the cross-camera relations---\texttt{CameraTopologyTable},
+\texttt{CalibrationTable}, and \texttt{GlobalIDTable}---to assign consistent global identities.
+This is the \emph{global} half of the decomposition, and where the systems-level challenges of
+Section~\ref{sec:background:mcot} (scalable association, inspectable state, runtime
+reconfiguration) are answered.
+
+\subsection{Naive Cross-Camera Matching Cost}
+\label{sec:multi:naive}
+Naive cross-camera association compares tracklets across all camera pairs. For $m$ cameras, each
+with multiple tracklets, exhaustive matching produces a combinatorial explosion of candidate
+comparisons, which becomes the primary scalability bottleneck as the network grows---the
+\emph{scalable-association} challenge in concrete form.
+
+\subsection{Topology-Aware Candidate Generation}
+\label{sec:multi:assoc}
+We formulate cross-camera association as an aggregated stream query synchronised by a
+\texttt{windowIndex} (an S/R2S join). The pipeline dynamically builds an \texttt{IN(\dots)}
+clause corresponding to the explicitly linked cameras of a topological cluster. By restricting
+comparisons and aggregations to localised camera groups, the candidate count drops
+sharply---confirmed by our 9-camera benchmark, where topology-aware partitioning yields a
+\textbf{4.16$\times$} reduction in per-call latency relative to global matching
+(Section~\ref{sec:evaluation}).
+
+% \subsection{Camera Topology as a Reconfigurable State Table}
+% \label{sec:multi:topology}
+% A key feature is treating camera neighbourhoods as relational configuration rather than hardcoded
+% logic. The \texttt{CameraTopologyTable} stores the active neighbour graph; administrators update
+% it at runtime by streaming \texttt{CameraTopology} events, and changes take effect for the next
+% window of tracklets. This tables-as-data design supports zero-downtime reconfiguration (adding a
+% camera, disabling a link) without redeploying the association queries---directly answering the
+% \emph{runtime-reconfiguration} challenge.
+
+\subsection{Camera Topology as a Reconfigurable State Table}
+\label{sec:multi:topology}
+A key feature is treating camera neighbourhoods as a relational configuration rather than hardcoded logic. The \texttt{CameraTopologyTable} stores the active neighbour graph, where the \texttt{overlapping} flag marks pairs of cameras with \emph{shared fields of view} (Section~\ref{sec:single:overlap} contrasts this with within-camera overlap suppression). Administrators update the table at runtime by streaming \texttt{CameraTopology} events, and changes take effect for the next window of tracklets. This tables-as-data design supports zero-downtime reconfiguration (adding a camera, disabling a link) without redeploying the association queries--- thereby directly answering the \emph{runtime-reconfiguration} challenge.
+
+\subsection{Handling Non-Overlapping Cameras via Transitional Gating}
+\label{sec:multi:transition}
+A challenge in real deployments is the existence of isolated (non-overlapping) cameras. If neighbourhoods are modelled purely on overlapping fields of view, a person leaving an isolated camera and entering another is assigned a new global identity, since no active stream join spans both cameras.
+
+To resolve this without losing the benefits of topological partitioning, we introduce \emph{transition edges} in the topology graph. Unlike overlapping edges, which group cameras into synchronisation joins, transition edges define directed or bidirectional movement paths between
+non-overlapping regions. They are stored in the same relational \texttt{CameraTopologyTable} alongside overlapping edges, so both overlapping joins and non-overlapping transition boundaries are reconfigurable at runtime by streaming \texttt{CameraTopology} events.
+
+For example, a person leaving the isolated view of \texttt{camera\_12} may transition to
+\texttt{camera\_02}, \texttt{camera\_13}, or \texttt{camera\_17}. With overlapping groups alone, \texttt{camera\_12} has no neighbours and any departing track terminates, forcing a new identity on reappearance. Configuring the transitions \texttt{12:02,13,17} registers these paths.
+
+During global association, before computing appearance similarities between active-window clusters and historical tracks in the \texttt{GlobalIDTable}, the system executes a topology-gating check:
+\begin{equation}
+    \text{Re-IDAllowed}(T_H, C_{curr}) = \begin{cases}
+        \text{True} & \text{if } \text{LastSeenCamera}(T_H) \in C_{curr} \\
+        \text{True} & \text{if } \exists c \in C_{curr} \text{ s.t. } (\text{LastSeenCamera}(T_H), c) \in E_{\text{overlap}} \cup E_{\text{transition}} \\
+        \text{False} & \text{otherwise}
+    \end{cases}
+\end{equation}
+where $T_H$ is the historical track, $C_{curr}$ the cameras containing the current cluster, $E_{\text{overlap}}$ the overlapping edges, and $E_{\text{transition}}$ the transition paths.
+
+When a person leaves \texttt{camera\_12}, their last-seen camera in the \texttt{GlobalIDTable} is set to \texttt{camera\_12}; when a tracklet appears in \texttt{camera\_02}, \texttt{camera\_13}, or  \texttt{camera\_17}, the gate admits the comparison and the global ID is
+preserved across the non-overlapping gap. All other cameras are bypassed, keeping the search localised and avoiding false positives in distant parts of the network (Figure~\ref{fig:transition_flow}).
+
+\begin{figure}[htb!]
+    \centering
+    \includegraphics[width=0.65\linewidth]{Evidence/map_transition_flow.png}
+    \caption{Transition topology mapping for isolated cameras. A person leaving the
+    non-overlapping field of view of \texttt{Camera 12} can transition to \texttt{Camera 02},
+    \texttt{Camera 13}, or \texttt{Camera 17}. Transitional gating restricts Re-ID candidate
+    matching to these paths, preventing identity fragmentation across non-overlapping zones.}
+    \label{fig:transition_flow}
+\end{figure}
+
+\subsection{Representative Selection}
+\label{sec:multi:repselect}
+Once cameras are joined and aggregated, the MCPT module selects the top-$k$ representative observations per associated tracklet (an S/R2S enrichment against \texttt{CalibrationTable}). Selection uses two keypoint criteria (\texttt{keypointTh}, \texttt{keypointConditionTh}): (i) presence of high-confidence anatomical landmarks (facial features, limb joints), and
+(ii) temporal stability of appearance embeddings within the window. This ensures the subsequent Re-ID clustering operates on the most discriminative data available. 
+
+\subsection{Online Clustering and Global Identity Maintenance}
+\label{sec:multi:globalid}
+Global identities are maintained in the \texttt{GlobalIDTable} (an S/R2R write path). A \emph{person-centric summary} logic reduces event volume: instead of streaming per-frame coordinates, the system aggregates all sightings of a person across the synchronised cluster and emits a single \texttt{GlobalPersonEvent} per identity per window, capturing the latest sighting (\texttt{Timestamp}, \texttt{Coordinate}) and the full camera set (e.g., \texttt{Cameras:[1,2,4]}).
+
+A key operational advantage is deterministic memory management---the \emph{inspectable-state} challenge in practice. Batch trackers often suffer unbounded memory growth from accumulating appearance signatures. Here, when the engine detects a person unseen across all cameras for a configured period (e.g., 2 minutes), an EPL timer triggers a \texttt{TrackExpiredEvent} with \texttt{@Priority(10)} handling (R2S), purging stale \texttt{GlobalIDTable} rows and garbage-collecting the heavy feature tensors from JVM memory (R2R \texttt{delete}).
+% TODO(consistency): reconcile this "2 minutes" expiry window with the "3-second synchronization
+% window" referenced near the reconfiguration result elsewhere in the draft. Confirm both values.
+
+\subsection{Join Planning and Optimisation}
+\label{sec:multi:joinplan}
+Topology sparsity shrinks the join search space and improves throughput. We quantify candidate reduction and runtime savings relative to naive matching in Section~\ref{sec:evaluation}.
+% TODO(thin): this subsection is currently a stub. Either expand with the candidate-reduction
+% analysis (counts pruned vs. naive) or fold into Sec~\ref{sec:multi:assoc} to avoid a one-line
+% subsection.
+
+
+\section{Implementation in SQL/EPL on Esper}\label{sec:implementation}
+\subsection{Why SQL-first on a CEP Engine}
+Implementing MCOT via SQL/EPL on a Complex Event Processing (CEP) engine like Esper~\cite{espertech2024} provides several distinct systems-level and operational advantages over conventional stream processing engines:
+
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Embeddable JVM-Local Runtime vs. Distributed Clusters:} Popular distributed stream processing frameworks like Apache Flink~\cite{carbone2015flink} or Apache Spark Streaming require running external, heavy cluster architectures. These distributed runtimes introduce significant network serialization latency and transport overhead when passing high-dimensional visual feature tensors across node boundaries. In contrast, Esper operates as a lightweight, embeddable JVM library. By running directly within the main application process, it enables zero-overhead sharing of heavy appearance feature tensors between the tracking operators and the relational state tables in memory.
+    \item \textbf{Relational State Table Semantics vs. Stream-Only Systems:} Traditional message brokers and log-processing systems like Apache Kafka~\cite{kreps2011kafka} (and its Kafka Streams library) are designed for log processing. While they support basic state abstractions (like KTables), they lack first-class declarative support for SQL-like state tables featuring primary keys, indexes, and continuous transactional updates/merges. Esper provides full relational table support, enabling us to model the active camera neighborhood and global identity mappings as queryable state relations that can be inspected at runtime via standard SQL queries to audit association decisions.
+    \item \textbf{Deterministic Memory and Tensor Management:} Large-scale MCOT pipelines suffer from memory footprint issues due to accumulating feature embeddings. While Flink CEP stores state in opaque state backends (like RocksDB), Esper allows us to declare priority-based temporal queries (such as \texttt{TrackExpiredEvent} with strict priority annotations) that automatically evict stale rows from the \texttt{GlobalIDTable} and trigger immediate JVM garbage collection of heavy vision tensors after a configurable inactivity window.
+    \item \textbf{Dynamic Topology Reconfiguration with Zero Downtime:} In Flink or Spark, changing the join query topology (e.g., adding a camera or redefining neighbor relationships) requires stopping the job, modifying the operator graph, and redeploying from a savepoint. In contrast, Esper supports compiling, deploying, and undeploying new EPL statements at runtime via its API. This allows our reactive reconfiguration loop to compile and deploy updated topological stream joins on-the-fly when changes to the \texttt{CameraTopologyTable} occur, achieving zero-downtime updates without interrupting the tracking pipeline.
+    \item \textbf{Declarative Streaming Engine vs. Database and Pure Pattern CEP Systems:} Existing database-oriented video query systems (such as MOQL~\cite{li1997moql}, BilVideo~\cite{donderler2005bilvideo}, or SVQL~\cite{lu2015svql}) support high-level spatial and attribute queries, but they are built for static, post-processed video repositories rather than live streaming data. Conversely, pure pattern-matching CEP systems (such as Snoop~\cite{chakravarthy1994snoop}, SASE~\cite{wu2006sase}, or TESLA~\cite{cugola2010tesla}) operate on stream events using automata or tree matching but lack support for mutable, indexed relational state tables (such as our \texttt{GlobalIDTable}). Esper is chosen because it uniquely unites stream windowing joins and queryable relational state tables in a single engine, allowing us to orchestrate real-time MCOT logic.
+\end{itemize}
+
+\subsection{Modular Operator Design}
+A key operational advantage of the proposed architecture is its \emph{functional modularity}, akin to interchangeable ``Lego-like'' blocks. By decoupling the temporal stream routing logic (EPL) from the heavy computational tracking kernels, the system allows for seamless algorithm substitution. 
+
+As shown in Fig.~\ref{fig:architecture}, the Esper engine handles high-level stream synchronization, windowing, and topological joining. When a window is filled, it triggers a listener that dispatches the collected data to a native tracking operator. This boundary allows developers to swap the underlying clustering algorithm (e.g., replacing the current HAC implementation with a density-based or deep-learning classifier) by simply updating the listener registration in the \texttt{IotMain} class. This modularity ensures the system can evolve with new computer vision techniques without requiring a redesign of the ingestion or synchronization layers.
+
+\subsection{Robust Synchronization and Jitter Handling}
+Using ingestion-time semantics simplifies real-time deployments by eliminating the need for complex event-time watermarking logic. To handle out-of-order deliveries and jitter, the system relies on a timeout-bounded aggregation window (e.g., \texttt{win:time(2 min) group by windowIndex having count(*) = numCameras}). This guarantees that the aggregation block moves forward seamlessly either when all participating cameras have gracefully reported for a \texttt{windowIndex}, or when the maximum latency explicitly expires, ensuring a predictable progress rate.
+
+\subsection{EPL Operator Templates}
+Representative EPL templates from the Esper implementation mapping to the pipeline stages in Table~\ref{tab:dag} are shown below:
+
+\paragraph{1. Ingestion \& Feature Enrichment.}
+\begin{verbatim}
+-- (Implicitly handled during ingestion into the Detections Stream)
+-- Features are extracted and attached before sending to Esper:
+-- e.g., streamEvent(new embeddingFeature(...), 
+--                   "embeddingFeature_camera_0001");
+\end{verbatim}
+
+\paragraph{2. Single-Camera Tracking.}
+\begin{verbatim}
+-- Stateful windowed single-camera tracking
+select detectedUsers, curFrame, timestamp 
+from embeddingFeature_camera_0001.win:length_batch(90)
+\end{verbatim}
+
+\paragraph{3. Topology-Aware Join (Association).}
+\begin{verbatim}
+-- Emits CrossCamCandidates stream (Aggregation Group)
+select window( * ) as results 
+from SingleCameraResult(cameraId in 
+    ('camera_0001', 'camera_0002')).win:time(2 min) 
+group by windowIndex 
+having count(*) = 2;
+\end{verbatim}
+
+\paragraph{4. Global ID Maintenance (Clustering).}
+\begin{verbatim}
+-- Maintains GlobalIDTable with latest state and person-centric summaries
+on GlobalPersonEvent as gpe
+merge into GlobalIDTable as gt
+where gt.globalId = gpe.globalId
+when matched then
+    update set gt.lastSeen = gpe.timestamp, gt.attributes = gpe.attributes
+when not matched then
+    insert select gpe.globalId as globalId, 
+                  gpe.timestamp as lastSeen, 
+                  gpe.attributes as attributes;
+
+-- Emit TrackExpiredEvent and clean up GlobalIDTable (with Priority handling)
+@Priority(10) on pattern [every timer:interval(10000)]
+insert into TrackExpiredEvent select globalId from GlobalIDTable
+where current_timestamp() - lastSeen > 120000;
+
+@Priority(1) on pattern [every timer:interval(10000)]
+delete from GlobalIDTable
+where current_timestamp() - lastSeen > 120000;
+\end{verbatim}
+
+\paragraph{5. Runtime Topology Reconfiguration.}
+\begin{verbatim}
+-- Define relational neighborhood graph
+-- (Esper 9 composite primary key syntax)
+create table CameraTopologyTable (
+    cameraId string, neighborId string, enabled boolean, overlapping boolean,
+    primary key(cameraId, neighborId)
+);
+
+-- Update topology at runtime via atomic upsert (on-merge)
+on CameraTopology as ct
+merge into CameraTopologyTable as target
+where target.cameraId = ct.cameraId
+  and target.neighborId = ct.neighborId
+when matched then
+  update set target.enabled = ct.enabled, target.overlapping = ct.overlapping
+when not matched then
+  insert select ct.cameraId as cameraId,
+               ct.neighborId as neighborId,
+               ct.enabled as enabled,
+               ct.overlapping as overlapping;
+\end{verbatim}
+
+\noindent Critically, the \texttt{CameraTopologyTable} is not merely a static configuration store. Our system implements a \emph{reactive reconfiguration loop}: each incoming \texttt{CameraTopology} event triggers a Connected Components computation over the in-memory neighborhood graph. When the resulting cluster partition differs from the currently active set of aggregation queries, the system automatically compiles and deploys new EPL statements targeting the updated camera groups, while undeploying the obsolete ones. This enables zero-downtime reconfiguration of the camera network---an operator can add, remove, or reassign camera neighborhoods at runtime without restarting the pipeline or manually editing query definitions.
+
+
+\subsection{Streaming Counterparts of Clustering}
+We implement streaming counterparts of clustering by maintaining tracklet summary statistics (e.g., appearance centroids, temporal bounds, and spatial histograms) in relational tables. The system uses a windowed Hierarchical Agglomerative Clustering (HAC) operator that executes at the end of each synchronization window. By partitioning the clustering problem into topological groups, we ensure that the clustering workload per group remains manageable even in high-throughput streams.
+
+\subsection{Handling Ordering and Jitter under Ingestion Time}
+Ingestion-time semantics avoids the complexity of late-event watermarking. To handle stream jitter, the system uses timeout-bounded aggregation windows (\texttt{win:time(2 min)}), which ensure that observations from all cameras in a neighborhood are aggregated before the clustering operator triggers. If a camera fails to report within the timeout, the window expires and the pipeline moves forward with the available data, guaranteeing a predictable progress rate.
+
+\subsection{Configuration Parameters}
+The system exposes several runtime-configurable parameters via the \texttt{ConfigurationTable}, including: (i) synchronization window size (frames), (ii) similarity thresholds for clustering, (iii) neighborhood links in the topology, and (iv) state eviction TTLs. This allows administrators to tune the accuracy-latency tradeoff dynamically.

@@ -9,14 +9,14 @@
         <junit.version>4.13.2</junit.version>  
         <checkstyle.skip>true</checkstyle.skip>
     </properties>
-    <groupId>com.espertech</groupId>
-    <artifactId>esper-example-IOT</artifactId>
+    <groupId>com.streamtrack</groupId>
+    <artifactId>streamtrack-mcpt</artifactId>
     <version>1.0.0</version>
 
     <modelVersion>4.0.0</modelVersion>
-    <name>Esper Examples - IOT</name>
+    <name>STREAMTRACK</name>
     <packaging>jar</packaging>
-    <description>Esper Example IOT</description>
+    <description>STREAMTRACK: A Streams-and-Tables Architecture for Scalable and Reconfigurable Multi-Camera Object Tracking</description>
     <dependencies>
         <dependency>
             <groupId>com.espertech</groupId>
@@ -135,7 +135,7 @@
                 <configuration>
                     <archive>
                         <manifestEntries>
-                            <Built-By>EsperTech</Built-By>
+                            <Built-By>Mahmoud Tayee, Mohamed ElHelw, Ahmed Awad</Built-By>
                         </manifestEntries>
                         <manifest>
                             <mainClass>com.espertech.esper.example.IOT.IotMain</mainClass>
@@ -157,7 +157,7 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>${maven.surefire.plugin.version}</version>
                 <configuration>
-                    <argLine>-Dlog4j.configuration=../etc/log4j.xml</argLine>
+                    <argLine>-Dlog4j.configuration=log4j.xml</argLine>
                     <argLine>-Xms256m -Xmx256m</argLine>
                     <systemProperties>
                         <property>
@@ -170,7 +170,7 @@
         </plugins>
         <testResources>
             <testResource>
-                <directory>etc</directory>
+                <directory>src/main/resources</directory>
             </testResource>
         </testResources>
     </build>

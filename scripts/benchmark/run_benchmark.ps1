@@ -1,0 +1,1 @@
+mvn exec:java -Dexec.mainClass="com.espertech.esper.example.IOT.IotMain" -Dexec.args="--scene 2 --features_dir .\Datasets\EmbedFeature --camera all --camera_groups '0001,0011;0013,0017' --turbo --output_dir ./output/scene2" -Dcheckstyle.skip=true

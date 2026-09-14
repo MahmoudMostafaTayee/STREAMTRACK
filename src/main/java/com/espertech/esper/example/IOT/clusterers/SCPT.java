@@ -21,6 +21,8 @@ import com.espertech.esper.example.IOT.helpers.ClusteringUtils;
 import com.yahoo.labs.samoa.instances.Instance;
 import com.yahoo.labs.samoa.instances.InstancesHeader;
 import moa.cluster.Clustering;
+import org.nd4j.linalg.api.ndarray.INDArray;
+import org.nd4j.linalg.factory.Nd4j;
 
 public class SCPT {
     private static final Logger logger = LoggerFactory.getLogger(SCPT.class);
@@ -323,19 +325,11 @@ public class SCPT {
                 true // minimize
         );
 
-        // 5. Extract results
-        // NOTE: The Python version updates the global dictionary for BOTH past and
-        // current.
-        // If you only need the current frame's new IDs:
-        int pastSize = pastClusters.size();
-        List<Integer> updatedCurrentClusters = new ArrayList<>();
-
-        // We only iterate the second half of the list (the current frames)
-        for (int i = pastSize; i < associatedClusters.size(); i++) {
-            updatedCurrentClusters.add(associatedClusters.get(i));
-        }
-
-        return updatedCurrentClusters;
+        // NOTE: Python's associate_cluster_between_period updates the trackingDict
+        // for BOTH past and current items. We now return the FULL associated list
+        // so the caller can update all items' OfflineIDs.
+        // Callers that need only the current portion must extract it themselves.
+        return associatedClusters;
     }
 
     public static OverlapResult divideOverlapOrNonOverlap/* ✅ */(List<Integer> clusterFrames,
@@ -428,7 +422,6 @@ public class SCPT {
     public static List<Integer> associateCluster/* ✅ */(List<Integer> clusters,
             double[][] centralityMatrix,
             double epsilon,
-            // Added missing parameters to signature
             boolean removeNoiseCluster,
             int costFunction,
             boolean minimize) {
@@ -448,52 +441,70 @@ public class SCPT {
             uniqueClustersList.remove(Integer.valueOf(-1));
         }
 
-        // Deep copy matrix
-        double[][] currentCentralityMatrix = new double[centralityMatrix.length][];
-        for (int i = 0; i < centralityMatrix.length; i++) {
-            currentCentralityMatrix[i] = Arrays.copyOf(centralityMatrix[i], centralityMatrix[i].length);
-            currentCentralityMatrix[i][i] = 0.0; // Ensure diagonal is 0
+        // Handle edge case: empty or single cluster
+        if (uniqueClustersList.size() <= 1) {
+            return Arrays.stream(clustersArray).boxed().collect(Collectors.toList());
         }
 
-        // Setup counts
-        Map<Integer, Integer> count = new HashMap<>();
+        // --- ND4J OPTIMIZATION ---
+        // Convert to INDArray for vectorized matrix operations via native BLAS
+        INDArray currentMatrix = Nd4j.create(centralityMatrix);
+        // Zero the diagonal
+        for (int i = 0; i < currentMatrix.rows(); i++) {
+            currentMatrix.put(i, i, 0.0);
+        }
+
+        // Setup counts for cost_function=2
+        Map<Integer, Integer> count = null;
+        INDArray countValuesVec = null;
         if (costFunction == 2) {
+            count = new HashMap<>();
             for (int cluster : clustersArray) {
                 if (removeNoiseCluster && cluster == -1)
                     continue;
                 count.put(cluster, count.getOrDefault(cluster, 0) + 1);
             }
+            // Build as column vector [N, 1] for outer product
+            double[] countArray = new double[uniqueClustersList.size()];
+            for (int i = 0; i < uniqueClustersList.size(); i++) {
+                countArray[i] = count.get(uniqueClustersList.get(i));
+            }
+            countValuesVec = Nd4j.create(countArray, new long[]{countArray.length, 1});
         }
 
         double th = 1.0 - epsilon;
 
         // 2. Main Loop
-        while (true) {
-            int cluster1Index = -1;
-            int cluster2Index = -1;
-            double maxVal = -Double.MAX_VALUE;
+        while (currentMatrix.rows() > 1) {
+            int cluster1Index, cluster2Index;
+            double maxVal;
 
-            // --- OPTIMIZED FIND MAX ---
-            // We combine the loops for CF1 and CF2 to avoid allocating a temp matrix.
-            for (int i = 0; i < currentCentralityMatrix.length; i++) {
-                // Optimization: j = i + 1 because matrix is symmetric
-                for (int j = i + 1; j < currentCentralityMatrix[i].length; j++) {
-
-                    double val = currentCentralityMatrix[i][j];
-
-                    if (costFunction == 2) {
-                        // Apply cost function math on the fly
-                        int c1 = uniqueClustersList.get(i);
-                        int c2 = uniqueClustersList.get(j);
-                        val = val / (double) (count.get(c1) * count.get(c2));
-                    }
-
-                    if (val > maxVal) {
-                        maxVal = val;
-                        cluster1Index = i;
-                        cluster2Index = j;
-                    }
+            if (costFunction == 1) {
+                // ND4J max-irow/col in native: O(N²) total via matrix argMax
+                int nRows = (int) currentMatrix.rows();
+                int nCols = (int) currentMatrix.columns();
+                // Flatten to [1, N*N] row vector for argMax (axis=1 = column-wise on rank-2)
+                int flatIdx = Nd4j.argMax(currentMatrix.reshape(1, nRows * nCols), 1).getInt(0);
+                cluster1Index = flatIdx / nCols;
+                cluster2Index = flatIdx % nCols;
+                maxVal = currentMatrix.getDouble(cluster1Index, cluster2Index);
+            } else if (costFunction == 2) {
+                // Averaged centrality using BLAS outer product: [N,1] x [1,N] = [N,N]
+                INDArray lenElementMatrix = countValuesVec.mmul(countValuesVec.transpose());
+                INDArray averagedMatrix = currentMatrix.div(lenElementMatrix);
+                // Zero diagonal
+                for (int i = 0; i < averagedMatrix.rows(); i++) {
+                    averagedMatrix.put(i, i, 0.0);
                 }
+                int nRows = (int) averagedMatrix.rows();
+                int nCols = (int) averagedMatrix.columns();
+                int flatIdx = Nd4j.argMax(averagedMatrix.reshape(1, nRows * nCols), 1).getInt(0);
+                cluster1Index = flatIdx / nCols;
+                cluster2Index = flatIdx % nCols;
+                maxVal = averagedMatrix.getDouble(cluster1Index, cluster2Index);
+            } else {
+                // Unknown cost function — exit
+                break;
             }
 
             // Stop if threshold not met
@@ -505,67 +516,54 @@ public class SCPT {
             int cluster1 = uniqueClustersList.get(cluster1Index);
             int cluster2 = uniqueClustersList.get(cluster2Index);
 
-            // Calculate combined row
-            double[] sumRow = new double[currentCentralityMatrix.length];
-            for (int k = 0; k < currentCentralityMatrix.length; k++) {
-                // Skip if comparing to self (logic safety)
-                if (k == cluster1Index || k == cluster2Index)
-                    continue;
+            // Compute combined row using ND4J vectorized ops
+            INDArray row1 = currentMatrix.getRow(cluster1Index);
+            INDArray row2 = currentMatrix.getRow(cluster2Index);
+            INDArray sumRow = row1.add(row2);
 
-                double val1 = currentCentralityMatrix[cluster1Index][k];
-                double val2 = currentCentralityMatrix[cluster2Index][k];
-
-                if (minimize && Math.min(val1, val2) < 0) {
-                    sumRow[k] = -1.0;
-                } else {
-                    sumRow[k] = val1 + val2;
+            if (minimize) {
+                // Element-wise: where min(row1[k], row2[k]) < 0, set to -1
+                for (int k = 0; k < sumRow.length(); k++) {
+                    if (Math.min(row1.getDouble(k), row2.getDouble(k)) < 0) {
+                        sumRow.putScalar(k, -1.0);
+                    }
                 }
             }
 
-            // Update cluster1's row/col in place FIRST
-            for (int k = 0; k < currentCentralityMatrix.length; k++) {
-                currentCentralityMatrix[cluster1Index][k] = sumRow[k];
-                currentCentralityMatrix[k][cluster1Index] = sumRow[k];
+            // Update cluster1's row and column
+            currentMatrix.putRow(cluster1Index, sumRow);
+            // sumRow is rank 1 [N], reshape to [N,1] column vector for putColumn
+            currentMatrix.putColumn(cluster1Index, sumRow.reshape(sumRow.length(), 1));
+            currentMatrix.put(cluster1Index, cluster1Index, 0.0);
+
+            // 4. Shrink Matrix (remove cluster2 row/col) via ND4J bulk indexing
+            int newSize = currentMatrix.rows() - 1;
+            int[] keepIndices = new int[newSize];
+            int idx = 0;
+            for (int i = 0; i < currentMatrix.rows(); i++) {
+                if (i != cluster2Index) keepIndices[idx++] = i;
             }
-            currentCentralityMatrix[cluster1Index][cluster1Index] = 0.0;
-
-            // 4. Shrink Matrix (Remove cluster2)
-            // We build a new smaller matrix, skipping row/col of cluster2
-            int newSize = currentCentralityMatrix.length - 1;
-            double[][] newCentralityMatrix = new double[newSize][newSize];
-
-            int newRow = 0;
-            for (int i = 0; i < currentCentralityMatrix.length; i++) {
-                if (i == cluster2Index)
-                    continue;
-
-                int newCol = 0;
-                for (int j = 0; j < currentCentralityMatrix.length; j++) {
-                    if (j == cluster2Index)
-                        continue;
-
-                    newCentralityMatrix[newRow][newCol] = currentCentralityMatrix[i][j];
-                    newCol++;
-                }
-                newRow++;
-            }
-            currentCentralityMatrix = newCentralityMatrix;
+            currentMatrix = currentMatrix.getRows(keepIndices);
+            currentMatrix = currentMatrix.getColumns(keepIndices);
 
             // 5. Update Global State
-            // Update labels in the main array
             for (int i = 0; i < clustersArray.length; i++) {
                 if (clustersArray[i] == cluster2) {
                     clustersArray[i] = cluster1;
                 }
             }
 
-            // Remove merged cluster from tracking list
-            uniqueClustersList.remove(cluster2Index); // More efficient to remove by index
+            uniqueClustersList.remove(cluster2Index);
 
-            // Update counts
             if (costFunction == 2) {
                 count.put(cluster1, count.get(cluster1) + count.get(cluster2));
                 count.remove(cluster2);
+                // Rebuild countValuesVec as [N, 1] column vector
+                double[] ca = new double[uniqueClustersList.size()];
+                for (int i = 0; i < uniqueClustersList.size(); i++) {
+                    ca[i] = count.get(uniqueClustersList.get(i));
+                }
+                countValuesVec = Nd4j.create(ca, new long[]{ca.length, 1});
             }
         }
 
@@ -1092,37 +1090,58 @@ public class SCPT {
 
     public static double[][] createSimilarityMatrixSCPT/* ✅ */(double[][] features, double epsilon) {
         int n = features.length;
-        double[][] similarityMatrix = new double[n][n];
-        // Match Python's behavior where scalar threshold is cast to float16 during
-        // comparison
-        double threshold = 1.0 - epsilon;
-        // double threshold = simulateFloat16(1.0 - epsilon); // DISABLED
+        int d = features[0].length;
 
-        // OPTIMIZATION: Pre-compute magnitudes to avoid recalculating inside the N*N
-        // loop
-        double[] magnitudes = new double[n];
+        // OPTIMIZED: Use ND4J BLAS mmul() matching sklearn's cosine_similarity
+        double threshold = 1.0 - epsilon;
+
+        // 1. Build ND4J matrix and normalize rows to unit length
+        INDArray X = Nd4j.create(features);
+        INDArray idx = Nd4j.create(features);
+        double[] invNorms = new double[n];
         for (int i = 0; i < n; i++) {
-            magnitudes[i] = getMagnitude(features[i]);
+            double norm = 0.0;
+            for (int k = 0; k < d; k++) {
+                double v = features[i][k];
+                norm += v * v;
+            }
+            norm = Math.sqrt(norm);
+            if (norm == 0.0) {
+                invNorms[i] = 0.0;
+                X.putScalar(i, 0, 1.0);
+            } else {
+                invNorms[i] = 1.0 / norm;
+                for (int k = 0; k < d; k++) {
+                    X.putScalar(i, k, features[i][k] * invNorms[i]);
+                }
+            }
         }
 
+        // 2. BLAS GEMM: sim = X_norm @ X_norm.T (single BLAS call)
+        INDArray sim = X.mmul(X.transpose());
+
+        // 3. Extract to double[][] with threshold & float16
+        boolean doFloat16 = TrackingParameters.isDebug;
+        double[][] similarityMatrix = new double[n][n];
         for (int i = 0; i < n; i++) {
-            similarityMatrix[i][i] = 1.0; // Self-similarity
-
+            similarityMatrix[i][i] = 1.0;
             for (int j = i + 1; j < n; j++) {
-                // Pass pre-computed magnitudes
-                double similarity = cosineSimilarity(features[i], features[j], magnitudes[i], magnitudes[j]);
-
-                // Simulate np.float16 precision
-                // similarity = simulateFloat16(similarity); // DISABLED for verification
-
+                double similarity = sim.getDouble(i, j);
+                // Handle zero-vector case: if one was zero-norm, dot=0 → similarity=0
+                if (invNorms[i] == 0.0 || invNorms[j] == 0.0) {
+                    similarity = 0.0;
+                }
+                if (doFloat16) {
+                    similarity = simulateFloat16(similarity);
+                }
                 if (similarity < threshold) {
                     similarity = 0.0;
                 }
-
                 similarityMatrix[i][j] = similarity;
                 similarityMatrix[j][i] = similarity;
             }
         }
+
         return similarityMatrix;
     }
 
