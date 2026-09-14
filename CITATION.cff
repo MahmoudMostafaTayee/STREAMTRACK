@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use this software in your research, please cite the associated paper."
+title: "STREAMTRACK: A Streams-and-Tables Architecture for Scalable and Reconfigurable Multi-Camera Object Tracking"
+authors:
+  - family-names: Tayee
+    given-names: Mahmoud
+    affiliation: "Cairo University"
+  - family-names: ElHelw
+    given-names: Mohamed
+    affiliation: "University of West London"
+  - family-names: Awad
+    given-names: Ahmed
+    affiliation: "Cairo University"
+journal: "Egyptian Informatics Journal"
+year: 2026
+status: "under-review"
+license: "MIT"
+repository-code: "https://github.com/MahmoudMostafaTayee/STREAMTRACK"
