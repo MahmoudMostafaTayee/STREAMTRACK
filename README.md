@@ -26,6 +26,7 @@ STREAMTRACK recasts multi-camera object tracking (MCOT) from a monolithic comput
 - [Repository Layout](#repository-layout)
 - [Prerequisites](#prerequisites)
 - [Building](#building)
+- [Testing](#testing)
 - [Datasets](#datasets)
 - [Quick Start](#quick-start)
 - [Command-Line Reference](#command-line-reference)
@@ -71,6 +72,9 @@ STREAMTRACK/
 │   │   └── TableSocketServer.java   # Live SQL-table inspection socket (port 9999)
 │   ├── IotMain.java             # Streaming entry point
 │   └── JavaBatchBaseline.java   # JVM batch baseline (recomputes state per window)
+├── src/main/resources/          # Logging configuration (log4j.xml, logback.xml)
+├── src/test/java/com/espertech/esper/example/IOT/
+│   └── SceneConfigTest.java     # Regression tests for scene-parameter loading
 ├── scripts/
 │   ├── run/                     # Scenario launch scripts (scene experiments, reconfig)
 │   ├── benchmark/               # Benchmark harnesses (batch, topology, multi-run)
@@ -106,6 +110,14 @@ STREAMTRACK/
 ```bash
 mvn clean install -Dcheckstyle.skip=true
 ```
+
+## Testing
+
+```bash
+mvn test -Dcheckstyle.skip=true
+```
+
+The test suite covers the scene-parameter loader (`TrackingParameters.getParametersForScene`): shipped defaults, local override files, command-line precedence, and graceful fallback when no config file exists. The tests are self-contained and require no datasets.
 
 ---
 
