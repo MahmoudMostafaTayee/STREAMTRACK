@@ -83,7 +83,6 @@ visualizations/
 # ============================
 paper/**/*.aux
 paper/**/*.bbl
-!paper/*Camera Ready*.bbl
 paper/**/*.blg
 paper/**/*.log
 paper/**/*.synctex.gz
@@ -94,8 +93,7 @@ paper/**/*.out
 # ============================
 *.pdf
 !paper/*.pdf
-!paper/ACDSA_latex/*.pdf
-!paper/IEEE-conference-template-062824/*.pdf
+!paper/FGCS/*.pdf
 *.json
 !**/calibration.json
 !config/**/*.json

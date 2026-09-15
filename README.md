@@ -10,7 +10,7 @@
 Official reference implementation of the paper:
 
 > **STREAMTRACK: A Streams-and-Tables Architecture for Scalable and Reconfigurable Multi-Camera Object Tracking**
-> Mahmoud Tayee, Mohamed ElHelw, Ahmed Awad — *Egyptian Informatics Journal* (under review)
+> Mahmoud Tayee, Mohamed ElHelw, Ahmed Awad — *Future Generation Computer Systems* (under review)
 
 STREAMTRACK recasts multi-camera object tracking (MCOT) from a monolithic computer-vision pipeline into a **streams-and-tables** system. Detections flow as append-only event streams, global identities and camera topology are maintained as queryable relational tables, and cross-camera association is a continuous, topology-aware join over them. On identical hardware and identical algorithm code, the architecture delivers:
 
@@ -82,7 +82,9 @@ STREAMTRACK/
 │   ├── compare_mcpt_dumps.py    # Stage-by-stage Java vs Python parity checker
 │   ├── compare_final_outputs.py # End-to-end Java vs Python ID-mapping comparison
 │   └── verify_numbers.py        # Extracts headline metrics from benchmark logs
-├── paper/                       # LaTeX source, camera-ready manuscript, figures
+├── paper/FGCS/                  # FGCS submission: main.tex, figures, embedded bibliography
+├── paper/Evidence/              # Benchmark figures + generator scripts
+├── paper/generate_figures.py    # Chart generator (speedup bars, scalability projection)
 ├── Datasets/                    # Feature embeddings (not included — see below)
 ├── Original/                    # Python figure-generation scripts & map assets
 ├── config/scenes/               # Per-scene tracker parameter files (scene_NNN.json)
@@ -314,7 +316,7 @@ If you use STREAMTRACK in your research, please cite the accompanying paper:
   author  = {Mahmoud Tayee and Mohamed ElHelw and Ahmed Awad},
   title   = {{STREAMTRACK}: A Streams-and-Tables Architecture for Scalable and
              Reconfigurable Multi-Camera Object Tracking},
-  journal = {Egyptian Informatics Journal},
+  journal = {Future Generation Computer Systems},
   year    = {2026},
   note    = {Under review}
 }
